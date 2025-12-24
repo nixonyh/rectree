@@ -53,6 +53,13 @@ impl RectNode {
         Self::new().with_translation(translation).with_size(size)
     }
 
+    pub fn from_rect(rect: impl Into<Rect>) -> Self {
+        let rect: Rect = rect.into();
+        Self::new()
+            .with_translation(Vec2::new(rect.min_x(), rect.min_y()))
+            .with_size(rect.size())
+    }
+
     pub fn with_translation(
         mut self,
         translation: impl Into<Vec2>,
