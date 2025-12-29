@@ -12,6 +12,13 @@ everything can be represented as a tree of axis-aligned bounding
 boxes (AABB). In **Rectree**, these are represented as rectangles,
 hence the name "rect-tree".
 
+## Layout Rules
+
+1. The only data that can flow down the tree is `Constraint`.
+2. The only data that can flow up the tree is `Size`.
+3. Each child, no matter the order, will recieve the same `Constraint` from the parent.
+4. Same `Constraint` should result in the same `Size` for a given unmodified node.
+
 ## Join the community!
 
 You can join us on the [Voxell discord server](https://discord.gg/Mhnyp6VYEQ).

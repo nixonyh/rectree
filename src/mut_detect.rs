@@ -20,11 +20,12 @@ impl<T> MutDetect<T> {
         self.mutated
     }
 
-    /// Get a mutable reference to the inner value while bypassing
-    /// the mutation detection.
-    pub(crate) fn bypass_mut_detect(&mut self) -> &mut T {
-        &mut self.inner
-    }
+    // TODO: Do we need this?
+    // /// Get a mutable reference to the inner value while bypassing
+    // /// the mutation detection.
+    // pub(crate) fn bypass_mut_detect(&mut self) -> &mut T {
+    //     &mut self.inner
+    // }
 
     /// Set mutated to `false` manually.
     pub(crate) fn reset_mutation(&mut self) {
@@ -86,14 +87,14 @@ mod tests {
         assert_eq!(*m, 2);
     }
 
-    #[test]
-    fn bypass_mut_detect_does_not_mark_mutated() {
-        let mut m = MutDetect::new(10);
+    // #[test]
+    // fn bypass_mut_detect_does_not_mark_mutated() {
+    //     let mut m = MutDetect::new(10);
 
-        *m.bypass_mut_detect() += 5;
-        assert!(!m.mutated());
-        assert_eq!(*m, 15);
-    }
+    //     *m.bypass_mut_detect() += 5;
+    //     assert!(!m.mutated());
+    //     assert_eq!(*m, 15);
+    // }
 
     #[test]
     fn reset_clears_mutated_flag() {
@@ -115,17 +116,5 @@ mod tests {
 
         assert!(m.mutated());
         assert_eq!(*m, 3);
-    }
-
-    #[test]
-    fn mixed_bypass_and_deref_mut_behaviour() {
-        let mut m = MutDetect::new(5);
-
-        *m.bypass_mut_detect() += 5;
-        assert!(!m.mutated());
-
-        *m += 1;
-        assert!(m.mutated());
-        assert_eq!(*m, 11);
     }
 }

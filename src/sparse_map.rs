@@ -168,8 +168,16 @@ pub struct Key {
 }
 
 impl Key {
-    pub fn new(index: usize, version: u32) -> Self {
+    fn new(index: usize, version: u32) -> Self {
         Self { index, version }
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn version(&self) -> u32 {
+        self.version
     }
 }
 

@@ -1,7 +1,4 @@
-//! # Mutation Concepts
-//!
-//! Whenever a [`RectNode`] is being mutated, it's
-
+#![doc = include_str!("../README.md")]
 #![no_std]
 
 extern crate alloc;
@@ -12,15 +9,17 @@ use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashSet;
-use kurbo::{Rect, Vec2};
+use kurbo::{Size, Vec2};
 
-use crate::mut_detect::MutDetect;
+use crate::node::RectNode;
 use crate::sparse_map::{Key, SparseMap};
 
 pub use kurbo;
 
 pub mod mut_detect;
+pub mod node;
 pub mod sparse_map;
+// pub mod vec2;
 
 #[derive(
     Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord,
@@ -35,27 +34,135 @@ impl Deref for NodeId {
     }
 }
 
+// #[derive(Debug)]
+// pub struct RectreeFragment {
+//     root_ids: NodeId,
+//     nodes: SparseMap<RectNode>,
+// }
+//
+// impl RectreeFragment {
+//     pub fn into_tree() -> Rectree {}
+// }
+
 #[derive(Default, Debug)]
 pub struct Rectree {
     root_ids: HashSet<NodeId>,
     nodes: SparseMap<RectNode>,
 
-    mutated_rects: BTreeSet<MutatedNode>,
-    mutated_translations: BTreeSet<MutatedNode>,
-
-    /// A heap allocated translation stack for tree traversal.
-    translation_stack: NodeStack<Vec2>,
+    mutated_translations: BTreeSet<DepthNode>,
 }
 
+// TODO: Separate states from the tree data into "contexts".
+pub struct LayoutCtx<'a> {
+    tree: &'a mut Rectree,
+    scheduled_relayout: Vec<NodeId>, // Should be moved from `EditCtx`.
+    node_stack: Vec<(NodeId, usize)>,
+    node_child_stack: Vec<NodeId>,
+    constraint_stack: Vec<Constraint>,
+}
+
+impl LayoutCtx<'_> {
+    pub fn layout(&mut self, layouter: &impl Layouter) {
+        while let Some(id) = self.scheduled_relayout.pop() {
+            self.node_stack.clear();
+            self.node_child_stack.clear();
+            self.constraint_stack.clear();
+
+            let Some(node) = self.tree.get_node(&id) else {
+                continue;
+            };
+
+            self.node_stack.push((id, 0));
+            self.node_child_stack.extend(node.children());
+            self.constraint_stack.push(node.constraint());
+
+            while let Some(id) = self.node_child_stack.pop()
+                && let Some(node) = self.tree.get_node(&id)
+            {
+                if node.children().is_empty() {
+                    continue;
+                }
+
+                let constraint = layouter.constraint(id);
+                let constraint_index = self.constraint_stack.len();
+                self.constraint_stack.push(constraint);
+
+                for child in node.children() {
+                    let Some(node) = self.tree.get_node(child) else {
+                        continue;
+                    };
+
+                    // Nothing to rebuild if the constraint is still the same.
+                    if node.constraint() != constraint {
+                        self.node_stack
+                            .push((*child, constraint_index));
+                        self.node_child_stack.push(*child);
+                    }
+                }
+            }
+
+            for (id, index) in self.node_stack.drain(..).rev() {
+                let constraint = self.constraint_stack[index];
+                let size = layouter.build(id, constraint, self.tree);
+
+                let Some(node) = self.tree.get_node_mut(&id) else {
+                    continue;
+                };
+
+                // TODO: Reset size mutation state?
+                // Do we need mut_detect here, we could just cache it..?
+                // node.size.set_if_ne(size);
+                *node.size = size;
+                *node.constraint = constraint;
+            }
+        }
+    }
+}
+
+pub struct EditCtx<'a> {
+    tree: &'a mut Rectree,
+    scheduled_relayout: BTreeSet<DepthNode>,
+}
+
+impl<'a> EditCtx<'a> {
+    pub fn schedule_relayout(&mut self, id: NodeId) -> bool {
+        if let Some(node) = self.tree.get_node(&id) {
+            return self
+                .scheduled_relayout
+                .insert(DepthNode::new(node.depth, id));
+        }
+
+        false
+    }
+
+    // TODO: Think of a better name.
+    pub fn compile(self) -> LayoutCtx<'a> {
+        LayoutCtx {
+            tree: self.tree,
+            scheduled_relayout: self
+                .scheduled_relayout
+                .into_iter()
+                // Layout happens bottom-up.
+                .rev()
+                .map(|n| n.id)
+                .collect(),
+            node_stack: Vec::new(),
+            node_child_stack: Vec::new(),
+            constraint_stack: Vec::new(),
+        }
+    }
+}
+
+/// [`NodeId`] cache with depth as the primary value for sorting.
 #[derive(
     Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord,
 )]
-struct MutatedNode {
+struct DepthNode {
     depth: u32,
     id: NodeId,
 }
 
-impl MutatedNode {
+impl DepthNode {
     fn new(depth: u32, id: NodeId) -> Self {
         Self { depth, id }
     }
@@ -68,14 +175,18 @@ impl Rectree {
 
     /// Inserts a node into the tree while keeping track of the
     /// parent-child relationship.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an invalid parent `NodeId` is used.
     pub fn insert_node(&mut self, mut node: RectNode) -> NodeId {
         let key = self.nodes.insert_with_key(|nodes, key| {
             let id = NodeId(key);
-            // TODO: Log error, or panic if parent is some but does
-            // not exists.
-            if let Some(parent) = node.parent
-                && let Some(parent_node) = nodes.get_mut(&parent)
-            {
+            if let Some(parent) = node.parent {
+                let parent_node = nodes
+                    .get_mut(&parent)
+                    .expect("Invalid parent Id.");
+
                 parent_node.children.insert(id);
                 node.depth = parent_node.depth + 1;
             } else {
@@ -83,8 +194,7 @@ impl Rectree {
                 self.root_ids.insert(id);
             }
 
-            let mutated_node = MutatedNode::new(node.depth, id);
-            self.mutated_rects.insert(mutated_node);
+            let mutated_node = DepthNode::new(node.depth, id);
             self.mutated_translations.insert(mutated_node);
 
             node
@@ -93,12 +203,49 @@ impl Rectree {
         NodeId(key)
     }
 
-    pub fn root_ids(&self) -> &HashSet<NodeId> {
-        &self.root_ids
+    /// Removes a node and its children recursively.
+    pub fn remove_node(&mut self, id: &NodeId) -> bool {
+        if let Some(node) = self.nodes.get(id) {
+            if let Some(parent) =
+                node.parent.and_then(|id| self.nodes.get_mut(&id))
+            {
+                parent.children.remove(id);
+            }
+
+            self.remove_recursive(id);
+            return true;
+        }
+
+        false
+    }
+
+    // TODO: RectreeFragment (above).
+    // TODO: Support detach node -> fragment.
+    // TODO: Support insert fragment.
+
+    fn remove_recursive(&mut self, id: &NodeId) {
+        let mut node_stack = vec![*id];
+
+        while let Some(id) = node_stack.pop() {
+            let Some(node) = self.nodes.get_mut(&id) else {
+                // TODO: Log error, or panic?
+                continue;
+            };
+
+            node_stack.extend(node.children());
+            self.nodes.remove(&id);
+        }
     }
 
     pub fn get_node(&self, id: &NodeId) -> Option<&RectNode> {
         self.nodes.get(id)
+    }
+
+    pub fn get_node_mut(
+        &mut self,
+        id: &NodeId,
+    ) -> Option<&mut RectNode> {
+        self.nodes.get_mut(id)
     }
 
     pub fn with_node_mut<F, R>(
@@ -113,24 +260,27 @@ impl Rectree {
             let result = f(node);
 
             // Record changes.
-            if node.size.mutated() {
-                self.mutated_rects
-                    .insert(MutatedNode::new(node.depth, *id));
-            }
+            // if node.size.mutated() {
+            //     let depth_node = DepthNode::new(node.depth, *id);
+            // }
             if node.local_translation.mutated() {
                 self.mutated_translations
-                    .insert(MutatedNode::new(node.depth, *id));
+                    .insert(DepthNode::new(node.depth, *id));
             }
 
             result
         })
     }
 
+    pub fn root_ids(&self) -> &HashSet<NodeId> {
+        &self.root_ids
+    }
+
     pub fn update_translations(&mut self) {
         let mutated_nodes =
             core::mem::take(&mut self.mutated_translations);
 
-        for MutatedNode { id, .. } in mutated_nodes.into_iter() {
+        for DepthNode { id, .. } in mutated_nodes.into_iter() {
             let Some(node) = self.nodes.get(&id) else {
                 // TODO: Log error, or panic?
                 continue;
@@ -148,194 +298,94 @@ impl Rectree {
 
     /// Propagrate the world translation from a given [`NodeId`].
     fn propagate_translation(&mut self, id: NodeId) {
-        self.translation_stack.init(id, Vec2::ZERO);
+        let mut node_stack = vec![(id, 0)];
+        let mut translation_stack = vec![Vec2::ZERO];
 
-        while let Some(NodeStackEl { id, buffer_index }) =
-            self.translation_stack.elements.pop()
-        {
+        while let Some((id, index)) = node_stack.pop() {
             let Some(node) = self.nodes.get_mut(&id) else {
                 // TODO: Log error, or panic?
                 continue;
             };
 
-            node.world_translation = *node.local_translation
-                + self.translation_stack.buffer[buffer_index];
+            node.world_translation =
+                *node.local_translation + translation_stack[index];
 
             // Reset the mutation state once the world translation
             // is being updated.
             node.local_translation.reset_mutation();
 
-            self.translation_stack.push_data(node.world_translation);
+            let new_index = translation_stack.len();
+            translation_stack.push(node.world_translation);
 
             for child in node.children.iter() {
-                self.translation_stack.push_node(*child);
+                node_stack.push((*child, new_index));
             }
-        }
-    }
-
-    /// Update self rect and all children rect.
-    pub fn relayout<F>(&mut self, mut relayout: F)
-    where
-        F: FnMut(&mut Self, NodeId),
-    {
-        let mutated_nodes = core::mem::take(&mut self.mutated_rects);
-
-        for MutatedNode { id, .. } in mutated_nodes.into_iter().rev()
-        {
-            let Some(node) = self.nodes.get(&id) else {
-                // TODO: Log error, or panic?
-                continue;
-            };
-
-            // Node could have been relayouted by a previous
-            // iteration.
-            if !node.size.mutated() {
-                continue;
-            }
-
-            self.propagate_relayout(id, &mut relayout);
-        }
-    }
-
-    fn propagate_relayout<F>(&mut self, id: NodeId, relayout: &mut F)
-    where
-        F: FnMut(&mut Self, NodeId),
-    {
-        let mut node_stack = vec![id];
-
-        while let Some(id) = node_stack.pop() {
-            let Some(node) = self.nodes.get_mut(&id) else {
-                // TODO: Log error, or panic?
-                continue;
-            };
-
-            // self.rect_stack.push_data(node.world_translation);
-
-            if let Some(parent) = node.parent {
-                node_stack.push(parent);
-            }
-
-            // Reset the mutation state before the relayout happens.
-            // This allows us to recapture changes if the relayout happen to
-            // update itself.
-            node.size.reset_mutation();
-            relayout(self, id);
         }
     }
 }
 
-#[derive(Debug)]
-pub struct NodeStackEl {
-    pub id: NodeId,
-    pub buffer_index: usize,
+pub trait Layouter {
+    fn constraint(&self, id: NodeId) -> Constraint;
+
+    fn build(
+        &self,
+        id: NodeId,
+        constraint: Constraint,
+        tree: &mut Rectree,
+    ) -> Size;
+
+    // fn build_and_reset(
+    //     &self,
+    //     id: NodeId,
+    //     constraint: Constraint,
+    //     tree: &mut Rectree,
+    // ) {
+    //     self.build(id, constraint, tree);
+    //     if let Some(node) = tree.get_node(&id) {
+    //         for child in node
+    //             .children()
+    //             .iter()
+    //             .copied()
+    //             .collect::<alloc::boxed::Box<_>>()
+    //         {
+    //             if let Some(node) = tree.get_node_mut(&child) {
+    //                 node.size.reset_mutation();
+    //             }
+    //         }
+    //     }
+    // }
 }
 
-#[derive(Debug)]
-pub struct NodeStack<T> {
-    pub elements: Vec<NodeStackEl>,
-    pub buffer: Vec<T>,
-    pub last_buffer_index: usize,
+// TODO: Document that `None` means that it's flexible.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub struct Constraint {
+    pub width: Option<f64>,
+    pub height: Option<f64>,
 }
 
-impl<T> Default for NodeStack<T> {
-    fn default() -> Self {
+impl Constraint {
+    pub fn from_both(width: f64, height: f64) -> Self {
         Self {
-            elements: Vec::new(),
-            buffer: Vec::new(),
-            last_buffer_index: 0,
+            width: Some(width),
+            height: Some(height),
         }
     }
-}
 
-impl<T> NodeStack<T> {
-    /// Clears the stack and initialize with default values.
-    pub fn init(&mut self, root: NodeId, initial_data: T) {
-        self.clear();
-        self.push_data(initial_data);
-        self.push_node(root);
+    pub fn from_width(width: f64) -> Self {
+        Self {
+            width: Some(width),
+            height: None,
+        }
     }
 
-    pub fn push_node(&mut self, id: NodeId) {
-        self.elements.push(NodeStackEl {
-            id,
-            buffer_index: self.last_buffer_index,
-        });
+    pub fn from_height(height: f64) -> Self {
+        Self {
+            width: None,
+            height: Some(height),
+        }
     }
 
-    pub fn push_data(&mut self, data: T) {
-        self.last_buffer_index = self.buffer.len();
-        self.buffer.push(data);
-    }
-
-    fn clear(&mut self) {
-        self.elements.clear();
-        self.buffer.clear();
-        self.last_buffer_index = 0;
-    }
-}
-
-// TODO: Docs must mention about this being assumed to be axis-aligned.
-#[derive(Default, Debug, Clone)]
-pub struct RectNode {
-    pub local_translation: MutDetect<Vec2>,
-    pub size: MutDetect<Vec2>,
-    pub(crate) world_translation: Vec2,
-    pub(crate) parent: Option<NodeId>,
-    pub(crate) children: MutDetect<HashSet<NodeId>>,
-    /// How deep in the hierarchy is this node (0 for root nodes).
-    pub(crate) depth: u32,
-}
-
-impl RectNode {
-    pub fn new() -> Self {
+    pub fn from_none() -> Self {
         Self::default()
-    }
-
-    pub fn from_translation(translation: Vec2) -> Self {
-        Self::new().with_translation(translation)
-    }
-
-    pub fn from_size(size: Vec2) -> Self {
-        Self::new().with_size(size)
-    }
-
-    pub fn from_translation_size(
-        translation: Vec2,
-        size: Vec2,
-    ) -> Self {
-        Self::new().with_translation(translation).with_size(size)
-    }
-
-    pub fn from_rect(rect: Rect) -> Self {
-        Self::new()
-            .with_translation(rect.origin().to_vec2())
-            .with_size(rect.size().to_vec2())
-    }
-
-    pub fn with_translation(mut self, translation: Vec2) -> Self {
-        *self.local_translation = translation;
-        self
-    }
-
-    pub fn with_size(mut self, size: Vec2) -> Self {
-        *self.size = size;
-        self
-    }
-
-    pub fn with_parent(mut self, parent: NodeId) -> Self {
-        self.parent = Some(parent);
-        self
-    }
-
-    pub fn world_translation(&self) -> Vec2 {
-        self.world_translation
-    }
-
-    pub fn children(&self) -> &HashSet<NodeId> {
-        &self.children
-    }
-
-    pub fn depth(&self) -> u32 {
-        self.depth
     }
 }
