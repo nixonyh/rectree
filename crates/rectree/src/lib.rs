@@ -65,7 +65,29 @@ pub struct LayoutCtx<'a> {
     new_translations: Vec<(NodeId, Vec2)>,
 }
 
-impl LayoutCtx<'_> {
+impl<'a> LayoutCtx<'a> {
+    pub fn new(tree: &'a mut Rectree) -> Self {
+        Self {
+            tree,
+            scheduled_relayout: BTreeSet::new(),
+            visited_nodes: HashSet::new(),
+            rebuild_stack: Vec::new(),
+            child_stack: Vec::new(),
+            constraint_stack: Vec::new(),
+            new_translations: Vec::new(),
+        }
+    }
+
+    pub fn schedule_relayout(&mut self, id: NodeId) -> bool {
+        if let Some(node) = self.tree.get_node(&id) {
+            return self
+                .scheduled_relayout
+                .insert(DepthNode::new(node.depth, id));
+        }
+
+        false
+    }
+
     pub fn layout<L>(mut self, layouter: &L)
     where
         L: Layouter,
@@ -163,43 +185,6 @@ impl LayoutCtx<'_> {
                     parent_id,
                 ));
             }
-        }
-    }
-}
-
-pub struct EditCtx<'a> {
-    tree: &'a mut Rectree,
-    scheduled_relayout: BTreeSet<DepthNode>,
-}
-
-impl<'a> EditCtx<'a> {
-    pub fn new(tree: &'a mut Rectree) -> Self {
-        Self {
-            tree,
-            scheduled_relayout: BTreeSet::new(),
-        }
-    }
-
-    pub fn schedule_relayout(&mut self, id: NodeId) -> bool {
-        if let Some(node) = self.tree.get_node(&id) {
-            return self
-                .scheduled_relayout
-                .insert(DepthNode::new(node.depth, id));
-        }
-
-        false
-    }
-
-    // TODO: Think of a better name.
-    pub fn compile(self) -> LayoutCtx<'a> {
-        LayoutCtx {
-            tree: self.tree,
-            scheduled_relayout: self.scheduled_relayout,
-            visited_nodes: HashSet::new(),
-            rebuild_stack: Vec::new(),
-            child_stack: Vec::new(),
-            constraint_stack: Vec::new(),
-            new_translations: Vec::new(),
         }
     }
 }

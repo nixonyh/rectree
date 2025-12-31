@@ -1,7 +1,7 @@
 use hashbrown::HashMap;
 use kurbo::{Affine, Circle, Rect, Size, Stroke, Vec2};
 use rectree::node::RectNode;
-use rectree::{Constraint, EditCtx, Layouter, NodeId, Rectree};
+use rectree::{Constraint, LayoutCtx, Layouter, NodeId, Rectree};
 use vello::Scene;
 use vello::peniko::Color;
 use vello_winit_examples::{VelloDemo, VelloWinitApp};
@@ -261,7 +261,7 @@ impl VelloDemo for LayoutDemo {
             .unwrap()
             .as_secs_f64();
 
-        let mut edit_ctx = EditCtx::new(&mut self.tree);
+        let mut ctx = LayoutCtx::new(&mut self.tree);
 
         for (i, (id, area)) in self.world.areas.iter_mut().enumerate()
         {
@@ -269,13 +269,12 @@ impl VelloDemo for LayoutDemo {
             let oscillation = (time.cos() + 1.0) * AREA;
 
             area.target_area = AREA + oscillation;
-            edit_ctx.schedule_relayout(*id);
+            ctx.schedule_relayout(*id);
         }
 
         // TODO: Combine the contexts and translation propagation.
         // Perform layouting.
-        let layout_ctx = edit_ctx.compile();
-        layout_ctx.layout(&self.world);
+        ctx.layout(&self.world);
         // Recalculate world positions.
         self.tree.update_translations();
 
