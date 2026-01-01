@@ -1,3 +1,5 @@
+use core::fmt::{Display, Formatter};
+
 use alloc::vec::Vec;
 
 /// A sparse, generational map keyed by [`Key`].
@@ -194,6 +196,12 @@ impl Key {
 
     pub fn version(&self) -> u32 {
         self.version
+    }
+}
+
+impl Display for Key {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("#{}v{}", self.index, self.version))
     }
 }
 

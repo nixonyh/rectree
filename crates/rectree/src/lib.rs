@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+use core::fmt::{Display, Formatter};
 use core::ops::Deref;
 
 use alloc::collections::btree_set::BTreeSet;
@@ -34,6 +35,12 @@ impl Deref for NodeId {
     }
 }
 
+impl Display for NodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("NodeId({})", self.0))
+    }
+}
+
 // #[derive(Debug)]
 // pub struct RectreeFragment {
 //     root_ids: NodeId,
@@ -48,21 +55,12 @@ impl Deref for NodeId {
 pub struct Rectree {
     root_ids: HashSet<NodeId>,
     nodes: SparseMap<RectNode>,
-
-    mutated_translations: BTreeSet<DepthNode>,
 }
 
 // TODO: Separate states from the tree data into "contexts".
 pub struct LayoutCtx<'a> {
     tree: &'a mut Rectree,
     scheduled_relayout: BTreeSet<DepthNode>, // Should be moved from `EditCtx`.
-    visited_nodes: HashSet<NodeId>,
-    /// (node, constraint index) stack that is pending for
-    /// [`Layouter::build()`].
-    rebuild_stack: Vec<(NodeId, usize)>,
-    child_stack: Vec<NodeId>,
-    constraint_stack: Vec<Constraint>,
-    new_translations: Vec<(NodeId, Vec2)>,
 }
 
 impl<'a> LayoutCtx<'a> {
@@ -70,16 +68,11 @@ impl<'a> LayoutCtx<'a> {
         Self {
             tree,
             scheduled_relayout: BTreeSet::new(),
-            visited_nodes: HashSet::new(),
-            rebuild_stack: Vec::new(),
-            child_stack: Vec::new(),
-            constraint_stack: Vec::new(),
-            new_translations: Vec::new(),
         }
     }
 
     pub fn schedule_relayout(&mut self, id: NodeId) -> bool {
-        if let Some(node) = self.tree.get_node(&id) {
+        if let Some(node) = self.tree.try_get(&id) {
             return self
                 .scheduled_relayout
                 .insert(DepthNode::new(node.depth, id));
@@ -92,98 +85,138 @@ impl<'a> LayoutCtx<'a> {
     where
         L: Layouter,
     {
-        self.visited_nodes.clear();
+        // Initialize reusable heap allocations.
+        let mut visited_nodes = HashSet::<NodeId>::new(); // TODO: Could we avoid using a hashmap?
+        // (node, constraint index) stack pending for layout build.
+        let mut rebuild_stack = Vec::<(NodeId, usize)>::new();
+        let mut child_stack = Vec::<NodeId>::new();
+        let mut constraint_stack = Vec::<Constraint>::new();
+        let mut new_translations = Vec::<(NodeId, Vec2)>::new();
+        let mut mutated_translations =
+            self.scheduled_relayout.clone();
 
         // Pop the deepest nodes first to ensure children are finalized before parents.
-        while let Some(depth_node) =
+        while let Some(DepthNode { id, .. }) =
             self.scheduled_relayout.pop_last()
         {
-            let id = depth_node.id;
+            rebuild_stack.clear();
+            child_stack.clear();
+            constraint_stack.clear();
 
-            self.rebuild_stack.clear();
-            self.child_stack.clear();
-            self.constraint_stack.clear();
-
-            let Some(node) = self.tree.get_node(&id) else {
-                continue;
-            };
-
+            let node = self.tree.get(&id);
             let initial_size = node.size;
 
-            self.rebuild_stack.push((id, 0));
-            self.child_stack.extend(node.children());
-            self.constraint_stack.push(node.constraint);
+            rebuild_stack.push((id, 0));
+            child_stack.extend(node.children());
+            constraint_stack.push(node.constraint);
 
             // Traverse the tree and create the build stack.
-            while let Some(id) = self.child_stack.pop() {
+            while let Some(id) = child_stack.pop() {
                 // Skip visited nodes, visited nodes should not be rebuilt.
-                if self.visited_nodes.contains(&id) {
+                if visited_nodes.contains(&id) {
                     continue;
                 }
 
-                if let Some(node) = self.tree.get_node(&id) {
-                    let constraint =
-                        layouter.constraint(&id, self.tree);
-                    let constraint_index =
-                        self.constraint_stack.len();
-                    self.constraint_stack.push(constraint);
+                let node = self.tree.get(&id);
+                let constraint = layouter.constraint(&id, self.tree);
+                let constraint_index = constraint_stack.len();
+                constraint_stack.push(constraint);
 
+                for child in node.children() {
                     // Nothing to rebuild if the constraint is still the same.
                     if node.constraint != constraint {
-                        self.rebuild_stack
-                            .push((id, constraint_index));
+                        // node.constraint = constraint;
+                        rebuild_stack
+                            .push((*child, constraint_index));
+
+                        // Continue down the child tree.
+                        child_stack.push(*child);
                     }
-                    self.child_stack.extend(node.children());
                 }
             }
 
             // Build out the size and position the children.
             for (id, constraint_index) in
-                self.rebuild_stack.drain(..).rev()
+                rebuild_stack.drain(..).rev()
             {
-                self.new_translations.clear();
+                new_translations.clear();
 
                 let set_translation =
                     |id: NodeId, translation: Vec2| {
-                        self.new_translations.push((id, translation));
+                        new_translations.push((id, translation));
                     };
 
-                self.tree.with_node_mut(&id, |node| {
-                    node.constraint =
-                        self.constraint_stack[constraint_index];
-                });
+                self.tree.get_mut(&id).constraint =
+                    constraint_stack[constraint_index];
 
                 // Build size.
                 let size =
                     layouter.build(&id, self.tree, set_translation);
 
                 // Update translation.
-                for (id, translation) in
-                    self.new_translations.drain(..)
-                {
-                    self.tree.with_node_mut(&id, |node| {
-                        *node.translation = translation;
-                    });
+                for (id, translation) in new_translations.drain(..) {
+                    *self.tree.get_mut(&id).translation = translation;
                 }
 
-                self.tree.with_node_mut(&id, |node| {
-                    node.size = size;
-                });
+                self.tree.get_mut(&id).size = size;
             }
 
-            self.visited_nodes.insert(id);
+            visited_nodes.insert(id);
 
             // Schedule relayout if size changed.
-            if let Some(node) = self.tree.get_node(&id)
-                && node.size != initial_size
+            let node = self.tree.get(&id);
+            if node.size != initial_size
                 && let Some(parent_id) = node.parent
-                && let Some(parent_node) =
-                    self.tree.get_node(&parent_id)
             {
-                self.scheduled_relayout.insert(DepthNode::new(
-                    parent_node.depth,
-                    parent_id,
-                ));
+                let parent_node = self.tree.get(&parent_id);
+                let depth_node =
+                    DepthNode::new(parent_node.depth, parent_id);
+
+                self.scheduled_relayout.insert(depth_node);
+                mutated_translations.insert(depth_node);
+            }
+        }
+
+        // Propagate translations.
+        for DepthNode { id, .. } in mutated_translations.into_iter() {
+            let Some(node) = self.tree.nodes.get(&id) else {
+                // TODO: Log error, or panic?
+                continue;
+            };
+
+            // Translation could have already been resolved by a
+            // previous iteration.
+            if !node.translation.mutated() {
+                continue;
+            }
+
+            self.propagate_translation(id);
+        }
+    }
+
+    /// Propagrate the world translation from a given [`NodeId`].
+    fn propagate_translation(&mut self, id: NodeId) {
+        let mut node_stack = vec![(id, 0)];
+        let mut translation_stack = vec![Vec2::ZERO];
+
+        while let Some((id, index)) = node_stack.pop() {
+            let Some(node) = self.tree.nodes.get_mut(&id) else {
+                // TODO: Log error, or panic?
+                continue;
+            };
+
+            node.world_translation =
+                *node.translation + translation_stack[index];
+
+            // Reset the mutation state once the world translation
+            // is being updated.
+            node.translation.reset_mutation();
+
+            let new_index = translation_stack.len();
+            translation_stack.push(node.world_translation);
+
+            for child in node.children.iter() {
+                node_stack.push((*child, new_index));
             }
         }
     }
@@ -215,7 +248,7 @@ impl Rectree {
     /// # Panics
     ///
     /// Panics if an invalid parent `NodeId` is used.
-    pub fn insert_node(&mut self, mut node: RectNode) -> NodeId {
+    pub fn insert(&mut self, mut node: RectNode) -> NodeId {
         let key = self.nodes.insert_with_key(|nodes, key| {
             let id = NodeId(key);
             if let Some(parent) = node.parent {
@@ -230,9 +263,6 @@ impl Rectree {
                 self.root_ids.insert(id);
             }
 
-            let mutated_node = DepthNode::new(node.depth, id);
-            self.mutated_translations.insert(mutated_node);
-
             node
         });
 
@@ -240,7 +270,7 @@ impl Rectree {
     }
 
     /// Removes a node and its children recursively.
-    pub fn remove_node(&mut self, id: &NodeId) -> bool {
+    pub fn remove(&mut self, id: &NodeId) -> bool {
         if let Some(node) = self.nodes.get(id) {
             if let Some(parent) =
                 node.parent.and_then(|id| self.nodes.get_mut(&id))
@@ -273,80 +303,31 @@ impl Rectree {
         }
     }
 
-    pub fn get_node(&self, id: &NodeId) -> Option<&RectNode> {
+    pub fn try_get(&self, id: &NodeId) -> Option<&RectNode> {
         self.nodes.get(id)
     }
 
-    pub fn with_node_mut<F, R>(
+    pub fn try_get_mut(
         &mut self,
         id: &NodeId,
-        f: F,
-    ) -> Option<R>
-    where
-        F: FnOnce(&mut RectNode) -> R,
-    {
-        self.nodes.get_mut(id).map(|node| {
-            let result = f(node);
+    ) -> Option<&mut RectNode> {
+        self.nodes.get_mut(id)
+    }
 
-            // Record changes.
-            if node.translation.mutated() {
-                self.mutated_translations
-                    .insert(DepthNode::new(node.depth, *id));
-            }
+    pub fn get(&self, id: &NodeId) -> &RectNode {
+        self.try_get(id).unwrap_or_else(|| {
+            panic!("{id} does not exists in tree.")
+        })
+    }
 
-            result
+    pub fn get_mut(&mut self, id: &NodeId) -> &mut RectNode {
+        self.try_get_mut(id).unwrap_or_else(|| {
+            panic!("{id} does not exists in tree.")
         })
     }
 
     pub fn root_ids(&self) -> &HashSet<NodeId> {
         &self.root_ids
-    }
-
-    pub fn update_translations(&mut self) {
-        let mutated_nodes =
-            core::mem::take(&mut self.mutated_translations);
-
-        for DepthNode { id, .. } in mutated_nodes.into_iter() {
-            let Some(node) = self.nodes.get(&id) else {
-                // TODO: Log error, or panic?
-                continue;
-            };
-
-            // Translation could have already been resolved by a
-            // previous iteration.
-            if !node.translation.mutated() {
-                continue;
-            }
-
-            self.propagate_translation(id);
-        }
-    }
-
-    /// Propagrate the world translation from a given [`NodeId`].
-    fn propagate_translation(&mut self, id: NodeId) {
-        let mut node_stack = vec![(id, 0)];
-        let mut translation_stack = vec![Vec2::ZERO];
-
-        while let Some((id, index)) = node_stack.pop() {
-            let Some(node) = self.nodes.get_mut(&id) else {
-                // TODO: Log error, or panic?
-                continue;
-            };
-
-            node.world_translation =
-                *node.translation + translation_stack[index];
-
-            // Reset the mutation state once the world translation
-            // is being updated.
-            node.translation.reset_mutation();
-
-            let new_index = translation_stack.len();
-            translation_stack.push(node.world_translation);
-
-            for child in node.children.iter() {
-                node_stack.push((*child, new_index));
-            }
-        }
     }
 }
 

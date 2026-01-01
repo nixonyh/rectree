@@ -15,7 +15,7 @@ fn main() {
     let mut world = World::default();
 
     // TODO: Simplify this process!
-    let vertical_id = tree.insert_node(RectNode::new());
+    let vertical_id = tree.insert(RectNode::new());
     world
         .node_colors
         .insert(vertical_id, Color::from_rgb8(200, 200, 10));
@@ -27,7 +27,7 @@ fn main() {
     let area_ids = areas
         .iter()
         .map(|_| {
-            tree.insert_node(RectNode::new().with_parent(vertical_id))
+            tree.insert(RectNode::new().with_parent(vertical_id))
         })
         .collect::<Vec<_>>();
 
@@ -77,7 +77,7 @@ impl Layouter for World {
         F: FnMut(NodeId, Vec2),
     {
         if let Some(area) = self.areas.get(id)
-            && let Some(node) = tree.get_node(id)
+            && let Some(node) = tree.try_get(id)
         {
             let constraint = node.constraint();
             return match (constraint.width, constraint.height) {
@@ -96,14 +96,14 @@ impl Layouter for World {
                 }
             };
         } else if let Some(vertical) = self.verticals.get(id)
-            && let Some(node) = tree.get_node(id)
+            && let Some(node) = tree.try_get(id)
         {
             let width =
                 node.constraint().width.unwrap_or_else(|| {
                     let mut max_width = 0.0;
 
                     for id in vertical.children.iter() {
-                        if let Some(node) = tree.get_node(id) {
+                        if let Some(node) = tree.try_get(id) {
                             max_width =
                                 node.size.width.max(max_width);
                         }
@@ -114,7 +114,7 @@ impl Layouter for World {
 
             let mut height = vertical.padding;
             for id in vertical.children.iter() {
-                if let Some(node) = tree.get_node(id) {
+                if let Some(node) = tree.try_get(id) {
                     let remainder = width - node.size.width;
 
                     let x = remainder * 0.5;
@@ -186,56 +186,55 @@ impl LayoutDemo {
 
             while let Some(node_id) = stack.pop() {
                 // Get node from tree.
-                if let Some(node) = self.tree.get_node(&node_id) {
-                    // Get world_translation.
-                    let world_pos = node.world_translation();
+                let node = self.tree.get(&node_id);
 
-                    // Reconstruct rect from world pos and size.
-                    let world_rect = Rect::from_origin_size(
-                        world_pos.to_point(),
-                        node.size,
-                    );
+                // Get world_translation.
+                let world_pos = node.world_translation();
 
-                    // Fetch node color.
-                    let color = self
-                        .world
-                        .node_colors
-                        .get(&node_id)
-                        .cloned()
-                        .unwrap_or(Color::WHITE);
+                // Reconstruct rect from world pos and size.
+                let world_rect = Rect::from_origin_size(
+                    world_pos.to_point(),
+                    node.size,
+                );
 
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        color,
-                        None,
-                        &world_rect,
-                    );
+                // Fetch node color.
+                let color = self
+                    .world
+                    .node_colors
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or(Color::WHITE);
 
-                    scene.stroke(
-                        &Stroke::new(2.0),
-                        transform,
-                        Color::from_rgb8(255, 255, 255),
-                        None,
-                        &world_rect,
-                    );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    color,
+                    None,
+                    &world_rect,
+                );
 
-                    // Origin markers.
-                    let origin =
-                        Circle::new(world_rect.origin(), 5.0);
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    Color::from_rgb8(255, 255, 255),
+                    None,
+                    &world_rect,
+                );
 
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        Color::from_rgb8(255, 50, 50),
-                        None,
-                        &origin,
-                    );
+                // Origin markers.
+                let origin = Circle::new(world_rect.origin(), 5.0);
 
-                    // Traverse to children.
-                    for child_id in node.children().iter() {
-                        stack.push(*child_id);
-                    }
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    Color::from_rgb8(255, 50, 50),
+                    None,
+                    &origin,
+                );
+
+                // Traverse to children.
+                for child_id in node.children().iter() {
+                    stack.push(*child_id);
                 }
             }
         }
@@ -272,11 +271,8 @@ impl VelloDemo for LayoutDemo {
             ctx.schedule_relayout(*id);
         }
 
-        // TODO: Combine the contexts and translation propagation.
         // Perform layouting.
         ctx.layout(&self.world);
-        // Recalculate world positions.
-        self.tree.update_translations();
 
         self.draw_tree(scene, Affine::IDENTITY);
     }
