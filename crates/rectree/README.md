@@ -36,9 +36,9 @@ layout algorithms can be built.
 1. The only data that can flow down the tree is `Constraint`.
 2. The only data that can flow up the tree is `Size`.
 3. Each child, no matter the order, will recieve the same `Constraint`
-  from the parent.
+   from the parent.
 4. Given the same `Constraint`, an unmodified node must always
-  produce the same `Size`.
+   produce the same `Size`.
 
 ## Join the community!
 
