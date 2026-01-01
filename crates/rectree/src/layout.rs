@@ -34,7 +34,7 @@ impl<'a> LayoutCtx<'a> {
         L: Layouter,
     {
         // Initialize reusable heap allocations.
-        let mut visited_nodes = HashSet::<NodeId>::new(); // TODO: Could we avoid using a hashmap?
+        let mut visited_nodes = HashSet::<NodeId>::new(); // TODO: Could we avoid using a hashset?
         // (node, constraint index) stack pending for layout build.
         let mut rebuild_stack = Vec::<(NodeId, usize)>::new();
         let mut child_stack = Vec::<NodeId>::new();
