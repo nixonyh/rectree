@@ -1,23 +1,44 @@
 # Rectree
 
-<!-- [![License](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](https://github.com/voxell-tech/rectree#license) -->
-<!-- [![Crates.io](https://img.shields.io/crates/v/rectree.svg)](https://crates.io/crates/rectree) -->
-<!-- [![Downloads](https://img.shields.io/crates/d/rectree.svg)](https://crates.io/crates/rectree) -->
-<!-- [![Docs](https://docs.rs/rectree/badge.svg)](https://docs.rs/rectree/latest/rectree/) -->
-<!-- [![CI](https://github.com/voxell-tech/rectree/workflows/CI/badge.svg)](https://github.com/voxell-tech/rectree/actions) -->
-<!-- [![Discord](https://img.shields.io/discord/442334985471655946.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/Mhnyp6VYEQ) -->
+[![License](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](https://github.com/voxell-tech/rectree#license)
+[![Crates.io](https://img.shields.io/crates/v/rectree.svg)](https://crates.io/crates/rectree)
+[![Downloads](https://img.shields.io/crates/d/rectree.svg)](https://crates.io/crates/rectree)
+[![Docs](https://docs.rs/rectree/badge.svg)](https://docs.rs/rectree/latest/rectree/)
+[![CI](https://github.com/voxell-tech/rectree/workflows/CI/badge.svg)](https://github.com/voxell-tech/rectree/actions)
+[![Discord](https://img.shields.io/discord/442334985471655946.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/Mhnyp6VYEQ)
 
 **Rectree** proposes a simple concept towards user interfaces, that
 everything can be represented as a tree of axis-aligned bounding
 boxes (AABB). In **Rectree**, these are represented as rectangles,
 hence the name "rect-tree".
 
-## Layout Rules
+Rectree is designed to be:
+- **Deterministic**: identical inputs always produce identical
+  layouts.
+- **Incremental**: only affected subtrees are recomputed.
+- **Policy-free**: layout behavior is defined by user-provided
+  algorithms.
+
+## Core Concepts
+
+- `Rectree`: a hierarchical tree of rectangular nodes.
+- `Constraint`: size limitations flowing *from parent to child*.
+- `Size`: resolved dimensions flowing *from child to parent*.
+- `LayoutEngine`: user-defined logic that computes constraints,
+  sizes, and relative translations.
+
+Rectree itself does not impose a specific layout style (e.g. flexbox,
+grid). Instead, it provides a strict data-flow model on top of which
+layout algorithms can be built.
+
+### Layout Rules
 
 1. The only data that can flow down the tree is `Constraint`.
 2. The only data that can flow up the tree is `Size`.
-3. Each child, no matter the order, will recieve the same `Constraint` from the parent.
-4. Same `Constraint` should result in the same `Size` for a given unmodified node.
+3. Each child, no matter the order, will recieve the same `Constraint`
+  from the parent.
+4. Given the same `Constraint`, an unmodified node must always
+  produce the same `Size`.
 
 ## Join the community!
 
