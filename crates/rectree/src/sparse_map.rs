@@ -235,6 +235,7 @@ impl<T> Item<T> {
     }
 }
 
+// FIXME: Make this more robust? Or we don't need it?
 // pub struct SparseMapIter<'a, T> {
 //     buffer: &'a [SparseItem<T>],
 //     curr_index: usize,
