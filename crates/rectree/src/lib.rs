@@ -18,7 +18,6 @@ pub mod layout;
 pub mod mut_detect;
 pub mod node;
 pub mod sparse_map;
-// pub mod vec2;
 
 #[derive(
     Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord,
