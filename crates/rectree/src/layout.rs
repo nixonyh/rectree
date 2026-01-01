@@ -6,12 +6,22 @@ use kurbo::{Size, Vec2};
 
 use crate::{NodeId, Rectree};
 
+/// Layout execution context for a [`Rectree`].
+///
+/// `LayoutCtx` collects nodes that require relayout and executes a
+/// bottom-up layout pass using a user-provided [`LayoutSolver`].
 pub struct LayoutCtx<'a> {
+    /// The tree being laid out.
     tree: &'a mut Rectree,
+    /// Nodes scheduled for relayout, ordered by depth.
+    ///
+    /// Deeper nodes are processed first to ensure children are laid
+    /// out before their parents.
     scheduled_relayout: BTreeSet<DepthNode>,
 }
 
 impl<'a> LayoutCtx<'a> {
+    /// Creates an empty layout context for the given [`Rectree`].
     pub fn new(tree: &'a mut Rectree) -> Self {
         Self {
             tree,
@@ -19,6 +29,10 @@ impl<'a> LayoutCtx<'a> {
         }
     }
 
+    /// Schedules a node for relayout.
+    ///
+    /// Returns `true` if the node was newly scheduled, or `false`
+    /// if the node does not exist or was already scheduled.
     pub fn schedule_relayout(&mut self, id: NodeId) -> bool {
         if let Some(node) = self.tree.try_get(&id) {
             return self
@@ -29,6 +43,15 @@ impl<'a> LayoutCtx<'a> {
         false
     }
 
+    /// Executes the layout pass using the provided [`LayoutSolver`].
+    ///
+    /// This method performs an incremental, bottom-up layout:
+    /// - Constraints are recomputed as needed.
+    /// - Sizes are rebuilt starting from the deepest affected nodes.
+    /// - Translations are updated and propagated through the tree.
+    ///
+    /// After completion, all scheduled nodes and their affected
+    /// ancestors will have up-to-date size and world translation.
     pub fn layout<T>(mut self, solver: &T)
     where
         T: LayoutSolver,
@@ -139,7 +162,11 @@ impl<'a> LayoutCtx<'a> {
         }
     }
 
-    /// Propagrate the world translation from a given [`NodeId`].
+    /// Propagates world-space translations starting from a node.
+    ///
+    /// This updates the node’s world translation and recursively
+    /// applies it to all descendants, clearing translation mutation
+    /// flags in the process.
     fn propagate_translation(&mut self, id: NodeId) {
         let mut node_stack = vec![(id, 0)];
         let mut translation_stack = vec![Vec2::ZERO];
@@ -164,9 +191,20 @@ impl<'a> LayoutCtx<'a> {
     }
 }
 
+/// Defines a layout algorithm for [`Rectree`].
+///
+/// A layout solver is responsible for:
+/// - Computing layout constraints for nodes.
+/// - Determining final sizes.
+/// - Assigning relative translations to child nodes.
 pub trait LayoutSolver {
+    /// Computes the layout constraint for a node.
     fn constraint(&self, id: &NodeId, tree: &Rectree) -> Constraint;
 
+    /// Builds the layout for a node and returns its final size.
+    ///
+    /// Implementations may assign translations to child nodes via
+    /// `set_translation`. All translations are relative to the node.
     fn build<F>(
         &self,
         id: &NodeId,
