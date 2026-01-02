@@ -59,7 +59,7 @@ impl<'a> LayoutCtx<'a> {
         let mut rebuild_stack = Vec::<(NodeId, usize)>::new();
         let mut child_stack = Vec::<NodeId>::new();
         let mut constraint_stack = Vec::<Constraint>::new();
-        let mut new_translations = Vec::<(NodeId, Vec2)>::new();
+        let mut positioner = Positioner::default();
         let mut mutated_translations =
             self.scheduled_relayout.clone();
 
@@ -107,25 +107,16 @@ impl<'a> LayoutCtx<'a> {
             for (id, constraint_index) in
                 rebuild_stack.drain(..).rev()
             {
-                new_translations.clear();
-
-                let set_translation =
-                    |id: NodeId, translation: Vec2| {
-                        new_translations.push((id, translation));
-                    };
-
                 self.tree.get_mut(&id).constraint =
                     constraint_stack[constraint_index];
 
                 // Build size.
                 let size =
-                    solver.build(&id, self.tree, set_translation);
+                    solver.build(&id, self.tree, &mut positioner);
 
                 // Update translation.
-                for (id, translation) in new_translations.drain(..) {
-                    *self.tree.get_mut(&id).translation = translation;
-                }
-
+                positioner.apply(self.tree);
+                // Update size.
                 self.tree.get_mut(&id).size = size;
             }
 
@@ -202,14 +193,29 @@ pub trait LayoutSolver {
     ///
     /// Implementations may assign translations to child nodes via
     /// `set_translation`. All translations are relative to the node.
-    fn build<F>(
+    fn build(
         &self,
         id: &NodeId,
         tree: &Rectree,
-        set_translation: F,
-    ) -> Size
-    where
-        F: FnMut(NodeId, Vec2);
+        positioner: &mut Positioner,
+    ) -> Size;
+}
+
+#[derive(Default)]
+pub struct Positioner {
+    new_translations: Vec<(NodeId, Vec2)>,
+}
+
+impl Positioner {
+    pub fn set(&mut self, id: NodeId, translation: Vec2) {
+        self.new_translations.push((id, translation));
+    }
+
+    pub fn apply(&mut self, tree: &mut Rectree) {
+        for (id, translation) in self.new_translations.drain(..) {
+            *tree.get_mut(&id).translation = translation;
+        }
+    }
 }
 
 /// [`NodeId`] cache with depth as the primary value for sorting.
