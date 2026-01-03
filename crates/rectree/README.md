@@ -24,7 +24,7 @@ Rectree is designed to be:
 - `Rectree`: a hierarchical tree of rectangular nodes.
 - `Constraint`: size limitations flowing *from parent to child*.
 - `Size`: resolved dimensions flowing *from child to parent*.
-- `LayoutEngine`: user-defined logic that computes constraints,
+- `LayoutSolver`: user-defined logic that computes constraints,
   sizes, and relative translations.
 
 Rectree itself does not impose a specific layout style (e.g. flexbox,

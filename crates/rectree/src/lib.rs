@@ -6,9 +6,11 @@ extern crate alloc;
 use core::fmt::{Display, Formatter};
 use core::ops::Deref;
 
+use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use hashbrown::HashSet;
 
+use crate::layout::DepthNode;
 use crate::node::RectNode;
 use crate::sparse_map::{Key, SparseMap};
 
@@ -36,8 +38,14 @@ pub struct Rectree {
     /// This uses a sparse map to provide stable identifiers while
     /// allowing efficient insertion and removal.
     nodes: SparseMap<RectNode>,
+    /// Nodes scheduled for relayout, ordered by depth.
+    ///
+    /// Deeper nodes are processed first to ensure children are laid
+    /// out before their parents.
+    scheduled_relayout: BTreeSet<DepthNode>,
 }
 
+/// Builders.
 impl Rectree {
     /// Creates an empty [`Rectree`].
     ///
@@ -67,6 +75,9 @@ impl Rectree {
                 // No parent, meaning that it's a root id.
                 self.root_ids.insert(id);
             }
+
+            self.scheduled_relayout
+                .insert(DepthNode::new(node.depth, id));
 
             node
         });
@@ -108,7 +119,10 @@ impl Rectree {
             self.nodes.remove(&id);
         }
     }
+}
 
+/// Node retrieval.
+impl Rectree {
     /// Returns an immutable reference to a node if it exists.
     pub fn try_get(&self, id: &NodeId) -> Option<&RectNode> {
         self.nodes.get(id)

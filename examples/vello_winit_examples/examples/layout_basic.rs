@@ -1,8 +1,8 @@
+use std::any::Any;
+
 use hashbrown::HashMap;
 use kurbo::{Affine, Circle, Rect, Size, Stroke, Vec2};
-use rectree::layout::{
-    Constraint, LayoutCtx, LayoutSolver, Positioner,
-};
+use rectree::layout::{Constraint, LayoutSolver, Positioner};
 use rectree::node::RectNode;
 use rectree::{NodeId, Rectree};
 use vello::Scene;
@@ -37,6 +37,8 @@ fn main() {
                 .collect(),
         },
     );
+    // Initial layout.
+    demo.tree.layout(&demo.world);
 
     let mut app = VelloWinitApp::new(demo);
 
@@ -58,11 +60,9 @@ impl World {
 }
 
 impl LayoutSolver for World {
-    fn constraint(&self, id: &NodeId, tree: &Rectree) -> Constraint {
-        if let Some(widget) = self.widgets.get(id)
-            && let Some(node) = tree.try_get(id)
-        {
-            return widget.constraint(node);
+    fn constraint(&self, id: &NodeId) -> Constraint {
+        if let Some(widget) = self.widgets.get(id) {
+            return widget.constraint();
         }
 
         Constraint::flexible()
@@ -93,7 +93,7 @@ struct VerticalCenteredList {
 }
 
 impl Widget for VerticalCenteredList {
-    fn constraint(&self, _: &RectNode) -> Constraint {
+    fn constraint(&self) -> Constraint {
         Constraint::flexible()
     }
 
@@ -140,8 +140,8 @@ struct FixedArea {
 }
 
 impl Widget for FixedArea {
-    fn constraint(&self, node: &RectNode) -> Constraint {
-        Constraint::fixed(node.size.width, node.size.height)
+    fn constraint(&self) -> Constraint {
+        Constraint::flexible()
     }
 
     fn build(
@@ -169,8 +169,8 @@ impl Widget for FixedArea {
     }
 }
 
-pub trait Widget {
-    fn constraint(&self, node: &RectNode) -> Constraint;
+pub trait Widget: Any {
+    fn constraint(&self) -> Constraint;
 
     fn build(
         &self,
@@ -296,20 +296,21 @@ impl VelloDemo for LayoutDemo {
             .unwrap()
             .as_secs_f64();
 
-        let mut ctx = LayoutCtx::new(&mut self.tree);
-
-        for (i, (id, area)) in
+        for (i, (id, widget)) in
             self.world.widgets.iter_mut().enumerate()
         {
-            // let time = time + i as f64;
-            // let oscillation = (time.cos() + 1.0) * AREA;
+            let widget = widget.as_mut() as &mut dyn Any;
+            if let Some(area) = widget.downcast_mut::<FixedArea>() {
+                let time = time + i as f64;
+                let oscillation = (time.cos() + 1.0) * AREA;
+                area.target_area = AREA + oscillation;
+            }
 
-            // area.target_area = AREA + oscillation;
-            ctx.schedule_relayout(*id);
+            self.tree.schedule_relayout(*id);
         }
 
         // Perform layouting.
-        ctx.layout(&self.world);
+        self.tree.layout(&self.world);
 
         self.draw_tree(scene, Affine::IDENTITY);
     }
