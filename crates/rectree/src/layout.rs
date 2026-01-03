@@ -1,9 +1,8 @@
-use alloc::vec;
 use alloc::vec::Vec;
-use hashbrown::HashSet;
+use alloc::{collections::btree_set::BTreeSet, vec};
 use kurbo::{Size, Vec2};
 
-use crate::{NodeId, Rectree};
+use crate::{NodeId, Rectree, node::RectNode};
 
 /// Layout execution.
 impl Rectree {
@@ -17,7 +16,9 @@ impl Rectree {
     /// Returns `true` if the node was newly scheduled, or `false`
     /// if the node does not exist or was already scheduled.
     pub fn schedule_relayout(&mut self, id: NodeId) -> bool {
-        if let Some(node) = self.try_get(&id) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.constrained = false;
+            node.built = false;
             return self
                 .scheduled_relayout
                 .insert(DepthNode::new(node.depth, id));
@@ -26,113 +27,97 @@ impl Rectree {
         false
     }
 
-    /// Executes the layout pass using the provided [`LayoutSolver`].
-    ///
-    /// This method performs an incremental, bottom-up layout:
-    /// - Constraints are recomputed as needed.
-    /// - Sizes are rebuilt starting from the deepest affected nodes.
-    /// - Translations are updated and propagated through the tree.
-    ///
-    /// After completion, all scheduled nodes and their affected
-    /// ancestors will have up-to-date size and world translation.
-    pub fn layout<T>(&mut self, solver: &T)
+    /// Executes the layout pass using the provided [`LayoutWorld`].
+    pub fn layout<W>(&mut self, world: &W)
     where
-        T: LayoutSolver,
+        W: LayoutWorld,
     {
-        // Initialize reusable heap allocations.
-        let mut scheduled_relayout =
+        let scheduled_relayout =
             core::mem::take(&mut self.scheduled_relayout);
-        let mut visited_nodes = HashSet::<NodeId>::new(); // TODO: Could we avoid using a hashset?
-        // (node, constraint index) stack pending for layout build.
-        let mut rebuild_stack = Vec::<(NodeId, usize)>::new();
         let mut child_stack = Vec::<NodeId>::new();
-        let mut constraint_stack = Vec::<Constraint>::new();
-        let mut positioner = Positioner::default();
-        let mut mutated_translations = scheduled_relayout.clone();
+        let mut build_stack = BTreeSet::<NodeId>::new();
 
-        // Pop the deepest nodes first to ensure children are
-        // finalized before parents.
-        while let Some(DepthNode { id, .. }) =
-            scheduled_relayout.pop_last()
-        {
-            rebuild_stack.clear();
-            child_stack.clear();
-            constraint_stack.clear();
+        for DepthNode { id, .. } in scheduled_relayout.iter() {
+            let Some(node) = self.try_get_mut(id) else {
+                continue;
+            };
+            // Check constrain flag, if it has already been
+            // constrained, skip the entire process.
+            if node.constrained {
+                continue;
+            }
 
-            let node = self.get(&id);
-            let initial_size = node.size;
+            child_stack.push(*id);
 
-            rebuild_stack.push((id, 0));
-            child_stack.extend(node.children());
-            // TODO: Assign constraint directly to the node?
-            let constraint = node
-                .parent
-                .map(|id| solver.constraint(&id))
-                .unwrap_or_default();
-            constraint_stack.push(constraint);
-
-            // Traverse the tree and create the build stack.
+            // Recursively propagate constraint from parent to child.
             while let Some(id) = child_stack.pop() {
-                // Skip visited nodes.
-                if visited_nodes.contains(&id) {
-                    continue;
-                }
-
                 let node = self.get(&id);
-                let constraint = solver.constraint(&id);
-                let constraint_index = constraint_stack.len();
-                constraint_stack.push(constraint);
+                let solver = world.get_solver(&id);
+                let constraint =
+                    solver.constraint(node.parent_constraint);
 
-                for child in node.children() {
-                    // Nothing to rebuild if the constraint is still
-                    // the same.
-                    if node.constraint != constraint {
-                        // node.constraint = constraint;
-                        rebuild_stack
-                            .push((*child, constraint_index));
+                self.nodes.scope(&id, |nodes, node| {
+                    node.constrained = true;
 
-                        // Continue down the child tree.
-                        child_stack.push(*child);
+                    for child in node.children() {
+                        let child_node =
+                            Self::get_node_mut(nodes, child);
+
+                        // Skip if constraint is still the same.
+                        if child_node.parent_constraint != constraint
+                        {
+                            child_node.parent_constraint = constraint;
+                            child_stack.push(*child);
+                        }
                     }
-                }
-            }
+                });
 
-            // Build out the size and position the children.
-            for (id, constraint_index) in
-                rebuild_stack.drain(..).rev()
-            {
-                // TODO: Could this be assigned above? If so, we can
-                // remove the constraint stack.
-                self.get_mut(&id).constraint =
-                    constraint_stack[constraint_index];
-
-                // Build size.
-                let size = solver.build(&id, self, &mut positioner);
-
-                // Update translation.
-                positioner.apply(self);
-                // Update size.
-                self.get_mut(&id).size = size;
-            }
-
-            visited_nodes.insert(id);
-
-            // Schedule relayout if size changed.
-            let node = self.get(&id);
-            if node.size != initial_size
-                && let Some(parent) = node.parent
-            {
-                let parent_node = self.get(&parent);
-                let depth_node =
-                    DepthNode::new(parent_node.depth, parent);
-
-                scheduled_relayout.insert(depth_node);
-                mutated_translations.insert(depth_node);
+                let node = self.get_mut(&id);
+                node.built = false;
+                build_stack.insert(id);
             }
         }
 
+        let mut positioner = Positioner::default();
+        let mut scheduled_translation_propagation =
+            scheduled_relayout;
+
+        // Propagate size from child to parent.
+        while let Some(id) = build_stack.pop_last() {
+            let solver = world.get_solver(&id);
+            let size =
+                solver.build(self.get(&id), self, &mut positioner);
+            positioner.apply(self);
+
+            self.nodes.scope(&id, |nodes, node| {
+                node.built = true;
+                // Parent needs to be rebuilt if size changes.
+                if node.size != size {
+                    if let Some(parent) = node.parent {
+                        let parent_node =
+                            Self::get_node_mut(nodes, &parent);
+                        // Insert only if parent node is not already set to
+                        // be rebuilt.
+                        if parent_node.built {
+                            parent_node.built = false;
+                            build_stack.insert(parent);
+                            scheduled_translation_propagation.insert(
+                                DepthNode::new(
+                                    parent_node.depth,
+                                    parent,
+                                ),
+                            );
+                        }
+                    }
+                    node.size = size;
+                }
+            });
+        }
+
         // Propagate translations.
-        for DepthNode { id, .. } in mutated_translations.into_iter() {
+        for DepthNode { id, .. } in
+            scheduled_translation_propagation.into_iter()
+        {
             let node = self.get(&id);
 
             // Translation could have already been resolved by a
@@ -174,20 +159,23 @@ impl Rectree {
     }
 }
 
-/// Defines a layout algorithm for [`Rectree`].
-pub trait LayoutSolver {
-    /// Computes the layout constraint for a node.
-    ///
-    /// Constraint must be known without any context of the tree.
-    fn constraint(&self, id: &NodeId) -> Constraint;
+pub trait LayoutWorld {
+    fn get_solver(&self, id: &NodeId) -> &dyn LayoutSolver;
+}
 
-    /// Builds the layout for a node and returns its final size.
-    ///
-    /// Implementations may assign translations to child nodes via
-    /// [`Positioner`]. All translations are relative to their parent.
+pub trait LayoutSolver {
+    /// Constraint of the widget, inherits the parent's constraint by
+    /// default.
+    fn constraint(
+        &self,
+        parent_constraint: Constraint,
+    ) -> Constraint {
+        parent_constraint
+    }
+
     fn build(
         &self,
-        id: &NodeId,
+        node: &RectNode,
         tree: &Rectree,
         positioner: &mut Positioner,
     ) -> Size;

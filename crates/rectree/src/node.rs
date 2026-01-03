@@ -17,23 +17,43 @@ use crate::mut_detect::MutDetect;
 /// ^
 /// +--------+
 /// |        | height
-/// +--------+  
+/// +--------+
 ///   width
 /// ```
 #[derive(Default, Debug, Clone)]
 pub struct RectNode {
-    pub translation: MutDetect<Vec2>,
-    pub size: Size,
-    // pub visual_translation: Option<Vec2>,
-    // pub visual_size: Option<Size>,
-    /// Constraint given by the parent.
-    pub(crate) constraint: Constraint,
+    /// Local translation, relative to the parent.
+    pub(crate) translation: MutDetect<Vec2>,
+    /// Size of the node.
+    ///
+    /// This is the resolved size after
+    /// [`crate::layout::LayoutSolver::build()`].
+    pub(crate) size: Size,
+    /// Constraint imposed by the parent onto this node.
+    ///
+    /// This is computed during the top-down constraint pass and should
+    /// not be mutated directly by user code.
+    pub(crate) parent_constraint: Constraint,
+    // /// Constraint of this node to be given to its children.
+    // pub(crate) constraint: Constraint,
+    /// World-space translation of this node.
+    ///
+    /// This is the accumulated translation from the root and is
+    /// computed during transform propagation.
     pub(crate) world_translation: Vec2,
+    /// Parent node in the hierarchy, if any.
     pub(crate) parent: Option<NodeId>,
-    pub(crate) children: MutDetect<HashSet<NodeId>>,
+    /// Child nodes of this node.
+    pub(crate) children: HashSet<NodeId>,
     /// How deep in the hierarchy is this node (0 for root nodes).
-    /// This can only be assigned by [`crate::Rectree`].
+    ///
+    /// This value is assigned and maintained by [`crate::Rectree`]
+    /// and must not be modified externally.
     pub(crate) depth: u32,
+    /// Set to false when this node needs to be reconstrained.
+    pub(crate) constrained: bool,
+    /// Set to false when this nodes needs to be rebuilt.
+    pub(crate) built: bool,
 }
 
 /// Builders.
@@ -85,8 +105,16 @@ impl RectNode {
 
 /// Getters.
 impl RectNode {
-    pub fn constraint(&self) -> Constraint {
-        self.constraint
+    pub fn translation(&self) -> Vec2 {
+        *self.translation
+    }
+
+    pub fn size(&self) -> Size {
+        self.size
+    }
+
+    pub fn parent_constraint(&self) -> Constraint {
+        self.parent_constraint
     }
 
     pub fn world_translation(&self) -> Vec2 {

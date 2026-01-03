@@ -2,7 +2,7 @@ use std::any::Any;
 
 use hashbrown::HashMap;
 use kurbo::{Affine, Circle, Rect, Size, Stroke, Vec2};
-use rectree::layout::{Constraint, LayoutSolver, Positioner};
+use rectree::layout::{LayoutSolver, LayoutWorld, Positioner};
 use rectree::node::RectNode;
 use rectree::{NodeId, Rectree};
 use vello::Scene;
@@ -59,28 +59,9 @@ impl World {
     }
 }
 
-impl LayoutSolver for World {
-    fn constraint(&self, id: &NodeId) -> Constraint {
-        if let Some(widget) = self.widgets.get(id) {
-            return widget.constraint();
-        }
-
-        Constraint::flexible()
-    }
-
-    fn build(
-        &self,
-        id: &NodeId,
-        tree: &Rectree,
-        positioner: &mut Positioner,
-    ) -> Size {
-        if let Some(widget) = self.widgets.get(id)
-            && let Some(node) = tree.try_get(id)
-        {
-            return widget.build(node, tree, positioner);
-        }
-
-        unreachable!("{id:?}")
+impl LayoutWorld for World {
+    fn get_solver(&self, id: &NodeId) -> &dyn LayoutSolver {
+        &**self.widgets.get(id).unwrap()
     }
 }
 
@@ -92,39 +73,36 @@ struct VerticalCenteredList {
     children: Vec<NodeId>,
 }
 
-impl Widget for VerticalCenteredList {
-    fn constraint(&self) -> Constraint {
-        Constraint::flexible()
-    }
-
+impl LayoutSolver for VerticalCenteredList {
     fn build(
         &self,
         node: &RectNode,
         tree: &Rectree,
         positioner: &mut Positioner,
     ) -> Size {
-        let width = node.constraint().width.unwrap_or_else(|| {
-            let mut max_width = 0.0;
+        let width =
+            node.parent_constraint().width.unwrap_or_else(|| {
+                let mut max_width = 0.0;
 
-            for id in self.children.iter() {
-                let node = tree.get(id);
-                max_width = node.size.width.max(max_width);
-            }
+                for id in self.children.iter() {
+                    let node = tree.get(id);
+                    max_width = node.size().width.max(max_width);
+                }
 
-            max_width
-        }) + self.padding * 2.0;
+                max_width
+            }) + self.padding * 2.0;
 
         let mut height = self.padding;
         for id in self.children.iter() {
-            if let Some(node) = tree.try_get(id) {
-                let remainder = width - node.size.width;
+            let node = tree.get(id);
+            let size = node.size();
+            let remainder = width - size.width;
 
-                let x = remainder * 0.5;
-                let y = height;
-                positioner.set(*id, Vec2::new(x, y));
+            let x = remainder * 0.5;
+            let y = height;
+            positioner.set(*id, Vec2::new(x, y));
 
-                height += node.size.height + self.padding;
-            }
+            height += size.height + self.padding;
         }
 
         Size::new(width, height)
@@ -139,18 +117,14 @@ struct FixedArea {
     pub target_area: f64,
 }
 
-impl Widget for FixedArea {
-    fn constraint(&self) -> Constraint {
-        Constraint::flexible()
-    }
-
+impl LayoutSolver for FixedArea {
     fn build(
         &self,
         node: &RectNode,
         _: &Rectree,
         _: &mut Positioner,
     ) -> Size {
-        let constraint = node.constraint();
+        let constraint = node.parent_constraint();
         match (constraint.width, constraint.height) {
             (None, None) => {
                 // Square
@@ -169,16 +143,9 @@ impl Widget for FixedArea {
     }
 }
 
-pub trait Widget: Any {
-    fn constraint(&self) -> Constraint;
+pub trait Widget: LayoutSolver + Any {}
 
-    fn build(
-        &self,
-        node: &RectNode,
-        tree: &Rectree,
-        positioner: &mut Positioner,
-    ) -> Size;
-}
+impl<T> Widget for T where T: LayoutSolver + Any {}
 
 struct LayoutDemo {
     tree: Rectree,
@@ -230,7 +197,7 @@ impl LayoutDemo {
                 // Reconstruct rect from world pos and size.
                 let world_rect = Rect::from_origin_size(
                     world_pos.to_point(),
-                    node.size,
+                    node.size(),
                 );
 
                 // Fetch node color.
@@ -304,9 +271,8 @@ impl VelloDemo for LayoutDemo {
                 let time = time + i as f64;
                 let oscillation = (time.cos() + 1.0) * AREA;
                 area.target_area = AREA + oscillation;
+                self.tree.schedule_relayout(*id);
             }
-
-            self.tree.schedule_relayout(*id);
         }
 
         // Perform layouting.

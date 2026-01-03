@@ -164,6 +164,41 @@ impl Rectree {
     pub fn root_ids(&self) -> &HashSet<NodeId> {
         &self.root_ids
     }
+
+    /// Returns an immutable reference to a node.
+    ///
+    /// This is a workaround for [`Self::get()`] due to lifetime
+    /// constraints.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the given [`NodeId`] does not exist in the tree.
+    #[expect(dead_code)]
+    fn get_node<'a>(
+        nodes: &'a SparseMap<RectNode>,
+        id: &NodeId,
+    ) -> &'a RectNode {
+        nodes.get(id).unwrap_or_else(|| {
+            panic!("{id} does not exists in tree.")
+        })
+    }
+
+    /// Returns a mutable reference to a node.
+    ///
+    /// This is a workaround for [`Self::get_mut()`] due to lifetime
+    /// constraints.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the given [`NodeId`] does not exist in the tree.
+    fn get_node_mut<'a>(
+        nodes: &'a mut SparseMap<RectNode>,
+        id: &NodeId,
+    ) -> &'a mut RectNode {
+        nodes.get_mut(id).unwrap_or_else(|| {
+            panic!("{id} does not exists in tree.")
+        })
+    }
 }
 
 #[derive(
