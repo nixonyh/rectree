@@ -97,7 +97,7 @@ impl RectNode {
     /// Size of the node.
     ///
     /// This is the resolved size after
-    /// [`crate::layout::LayoutSolver::build()`].
+    /// [`crate::layout::LayoutWorld::build()`].
     pub fn size(&self) -> Size {
         self.size
     }
@@ -105,7 +105,7 @@ impl RectNode {
     /// Constraint imposed by the parent onto this node.
     ///
     /// This is computed during the top-down constraint pass via
-    /// [`crate::layout::LayoutSolver::constraint()`].
+    /// [`crate::layout::LayoutWorld::constraint()`].
     pub fn parent_constraint(&self) -> Constraint {
         self.parent_constraint
     }

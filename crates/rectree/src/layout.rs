@@ -52,10 +52,10 @@ impl Rectree {
 
             // Recursively propagate constraint from parent to child.
             while let Some(id) = child_stack.pop() {
-                let node = self.get(&id);
-                let solver = world.get_solver(&id);
+                let parent_constraint =
+                    self.get(&id).parent_constraint;
                 let constraint =
-                    solver.constraint(node.parent_constraint);
+                    world.constraint(&id, parent_constraint);
 
                 self.nodes.scope(&id, |nodes, node| {
                     node.state.has_recontrained();
@@ -85,9 +85,12 @@ impl Rectree {
         // Propagate size from child to parent.
         while let Some(DepthNode { id, .. }) = build_stack.pop_last()
         {
-            let solver = world.get_solver(&id);
-            let size =
-                solver.build(self.get(&id), self, &mut positioner);
+            let size = world.build(
+                &id,
+                self.get(&id),
+                self,
+                &mut positioner,
+            );
             positioner.apply(self);
 
             self.nodes.scope(&id, |nodes, node| {
@@ -97,8 +100,8 @@ impl Rectree {
                     if let Some(parent) = node.parent {
                         let parent_node =
                             Self::get_node_mut(nodes, &parent);
-                        // Insert only if parent node is not already set to
-                        // be rebuilt.
+                        // Insert only if parent node is not already
+                        // set to be rebuilt.
                         if parent_node.state.built() {
                             parent_node.state.needs_reposition();
                             parent_node.state.needs_rebuild();
@@ -132,7 +135,7 @@ impl Rectree {
 
     /// Propagates world-space translations starting from a node.
     ///
-    /// This updates the node’s world translation and recursively
+    /// This updates the node's world translation and recursively
     /// applies it to all descendants, clearing translation mutation
     /// flags in the process.
     fn propagate_translation(&mut self, id: NodeId) {
@@ -159,58 +162,39 @@ impl Rectree {
     }
 }
 
-/// Provides access to layout solvers associated with nodes.
+/// Provides the layout logic for each node in the tree.
 ///
-/// Acts as the bridge between [`Rectree`] and layout logic, allowing
-/// each node to be resolved by an external [`LayoutSolver`].
+/// Acts as the bridge between [`Rectree`] and the application's
+/// element system.
 pub trait LayoutWorld {
-    /// Returns the [`LayoutSolver`] responsible for computing layout
-    /// for the given [`NodeId`].
-    fn get_solver(&self, id: &NodeId) -> &dyn LayoutSolver;
-}
-
-/// Defines how a node participates in layout resolution.
-///
-/// A `LayoutSolver` is responsible for:
-/// - Propagating constraints from parent to children (top-down).
-/// - Computing the node’s final size (bottom-up).
-/// - Positioning child nodes relative to the parent.
-pub trait LayoutSolver {
-    /// Computes the constraint to be applied to this node.
+    /// Computes the constraint this node propagates to its children.
     ///
-    /// By default, the parent’s constraint is forwarded unchanged.
-    /// Implementations may tighten, relax, or otherwise transform the
-    /// constraint before it is used during layout.
+    /// `parent` is the constraint imposed on this node by its own
+    /// parent. The return value is applied to each child before
+    /// their build pass.
     fn constraint(
         &self,
-        parent_constraint: Constraint,
-    ) -> Constraint {
-        parent_constraint
-    }
+        id: &NodeId,
+        parent: Constraint,
+    ) -> Constraint;
 
     /// Builds the layout for a node and returns its resolved size.
     ///
-    /// This method is called during the layout pass after constraints
-    /// have been propagated.
-    ///
-    /// Implementations may:
-    /// - Inspect the node’s state and children via [`Rectree`].
-    /// - Assign local translations to child nodes via
-    ///   [`Positioner`].
-    ///
-    /// All translations written through [`Positioner`] are relative
-    /// to the parent node.
+    /// Called bottom-up after constraints have been propagated.
+    /// Implementations may inspect the tree and assign child
+    /// translations via [`Positioner`].
     fn build(
         &self,
+        id: &NodeId,
         node: &RectNode,
         tree: &Rectree,
-        positioner: &mut Positioner,
+        pos: &mut Positioner,
     ) -> Size;
 }
 
 /// Collects child translations produced during layout construction.
 ///
-/// See [`LayoutSolver::build()`].
+/// See [`LayoutWorld::build()`].
 #[derive(Default)]
 pub struct Positioner {
     new_translations: Vec<(NodeId, Vec2)>,
@@ -229,7 +213,7 @@ impl Positioner {
     /// Applies all recorded translations to the [`Rectree`].
     ///
     /// This is called internally after layout resolution to commit
-    /// the results of [`LayoutSolver::build()`].
+    /// the results of [`LayoutWorld::build()`].
     fn apply(&mut self, tree: &mut Rectree) {
         for (id, translation) in self.new_translations.drain(..) {
             tree.get_mut(&id).translation = translation;

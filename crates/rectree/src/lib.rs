@@ -12,9 +12,9 @@ use hashbrown::HashSet;
 use sparse_map::{Key, SparseMap};
 
 use crate::layout::DepthNode;
-use crate::node::RectNode;
 
 pub use kurbo;
+pub use node::RectNode;
 
 pub mod layout;
 pub mod node;
