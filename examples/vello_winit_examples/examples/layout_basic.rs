@@ -1,12 +1,9 @@
 use std::any::Any;
 
 use hashbrown::HashMap;
-use kurbo::{Affine, Circle, Rect, Size, Stroke, Vec2};
-use rectree::layout::{
-    Constraint, LayoutSolver, LayoutWorld, Positioner,
-};
-use rectree::node::RectNode;
-use rectree::{NodeId, Rectree};
+use kurbo::{Affine, Circle, Point, Rect, Size as KSize, Stroke};
+use rectree::layout::{LayoutWorld, Positioner};
+use rectree::{Constraint, NodeId, RectNode, Rectree, Size, Vec2};
 use vello::Scene;
 use vello::peniko::Color;
 use vello::peniko::color::palette::css;
@@ -16,11 +13,12 @@ use winit::event_loop::EventLoop;
 fn main() {
     let event_loop = EventLoop::new().unwrap();
     let mut demo = LayoutDemo::new();
+    let root_size = demo.window_size;
     let mut builder = demo.builder();
 
     let create_column = |b: &mut Builder| {
         Vertical::new(10.0).show(b, |b| {
-            const WIDTH: f64 = 200.0;
+            const WIDTH: f32 = 200.0;
             vec![
                 FixedSizeWidget::new(Size::new(WIDTH, 40.0))
                     .with_color(css::RED)
@@ -47,7 +45,8 @@ fn main() {
         })
     };
 
-    let root_id = FixedSizeWidget::new(builder.demo.window_size)
+    let root_id =
+        FixedSizeWidget::new(root_size)
         .show_with_child(&mut builder, |b| {
             PlaceWidget::new(Alignment::Both {
                 h: HAlign::Center,
@@ -56,7 +55,7 @@ fn main() {
             .show(b, |b| {
                 Padding::all(20.0).show(b, |b| {
                     Vertical::new(20.0).show(b, |b| {
-                        const HEIGHT: f64 = 60.0;
+                        const HEIGHT: f32 = 60.0;
                         vec![
                             Horizontal::new(50.0).show(b, |b| {
                                 vec![
@@ -110,14 +109,43 @@ impl World {
 }
 
 impl LayoutWorld for World {
-    fn get_solver(&self, id: &NodeId) -> &dyn LayoutSolver {
-        &**self.widgets.get(id).unwrap()
+    fn constraint(
+        &self,
+        id: &NodeId,
+        parent: Constraint,
+    ) -> Constraint {
+        self.widgets
+            .get(id)
+            .map(|w| w.constraint(parent))
+            .unwrap_or(parent)
+    }
+
+    fn build(
+        &self,
+        id: &NodeId,
+        node: &RectNode,
+        tree: &Rectree,
+        pos: &mut Positioner,
+    ) -> Size {
+        self.widgets
+            .get(id)
+            .map(|w| w.build(node, tree, pos))
+            .unwrap_or(Size::ZERO)
     }
 }
 
-pub trait Widget: LayoutSolver + Any {}
+pub trait Widget: Any {
+    fn constraint(&self, parent: Constraint) -> Constraint {
+        parent
+    }
 
-impl<T> Widget for T where T: LayoutSolver + Any {}
+    fn build(
+        &self,
+        node: &RectNode,
+        tree: &Rectree,
+        positioner: &mut Positioner,
+    ) -> Size;
+}
 
 pub struct LayoutDemo {
     tree: Rectree,
@@ -178,13 +206,18 @@ impl LayoutDemo {
                 // Get node from tree.
                 let node = self.tree.get(&node_id);
 
-                // Get world_translation.
+                // Convert layout types to kurbo for rendering.
                 let world_pos = node.world_translation();
-
-                // Reconstruct rect from world pos and size.
+                let size = node.size();
                 let world_rect = Rect::from_origin_size(
-                    world_pos.to_point(),
-                    node.size(),
+                    Point::new(
+                        world_pos.x as f64,
+                        world_pos.y as f64,
+                    ),
+                    KSize::new(
+                        size.width as f64,
+                        size.height as f64,
+                    ),
                 );
 
                 // Hack to get the color of `FixedSizeWidget`.
@@ -249,7 +282,10 @@ impl VelloDemo for LayoutDemo {
     }
 
     fn initial_logical_size(&self) -> (f64, f64) {
-        (self.window_size.width, self.window_size.height)
+        (
+            self.window_size.width as f64,
+            self.window_size.height as f64,
+        )
     }
 
     fn size_changed(&mut self, size: Size) {
@@ -308,7 +344,7 @@ pub enum Alignment {
     Vertical(VAlign),
 }
 
-/// Place the child widget in a certain alignment
+/// Place the child widget in a certain alignment.
 pub struct PlaceWidget {
     pub alignment: Alignment,
 }
@@ -330,7 +366,7 @@ impl PlaceWidget {
     }
 }
 
-impl LayoutSolver for PlaceWidget {
+impl Widget for PlaceWidget {
     fn build(
         &self,
         node: &RectNode,
@@ -352,8 +388,9 @@ impl LayoutSolver for PlaceWidget {
             let mut should_position = false;
 
             if let Some(halign) = halign
-                && let Some(width) = constraint.width
+                && constraint.max.width.is_finite()
             {
+                let width = constraint.max.width;
                 should_position = true;
                 translation.x = match halign {
                     HAlign::Left => 0.0,
@@ -365,8 +402,9 @@ impl LayoutSolver for PlaceWidget {
             }
 
             if let Some(valign) = valign
-                && let Some(height) = constraint.height
+                && constraint.max.height.is_finite()
             {
+                let height = constraint.max.height;
                 should_position = true;
                 translation.y = match valign {
                     VAlign::Top => 0.0,
@@ -390,13 +428,14 @@ impl LayoutSolver for PlaceWidget {
 /// [`HorizontalWidget`] builder.
 #[derive(Debug, Clone)]
 pub struct Horizontal {
-    pub spacing: f64,
+    pub spacing: f32,
 }
 
 impl Horizontal {
-    pub fn new(spacing: f64) -> Self {
+    pub fn new(spacing: f32) -> Self {
         Self { spacing }
     }
+
     pub fn show(
         self,
         builder: &mut Builder,
@@ -416,7 +455,7 @@ pub struct HorizontalWidget {
     pub children: Vec<NodeId>,
 }
 
-impl LayoutSolver for HorizontalWidget {
+impl Widget for HorizontalWidget {
     fn build(
         &self,
         _node: &RectNode,
@@ -433,12 +472,12 @@ impl LayoutSolver for HorizontalWidget {
             positioner.set(*id, Vec2::new(x_cursor, 0.0));
             x_cursor += child_size.width + self.style.spacing;
 
-            // Track the tallest child
+            // Track the tallest child.
             if child_size.height > max_height {
                 max_height = child_size.height;
             }
         }
-        // Remove the last added spacing
+        // Remove the last added spacing.
         if !self.children.is_empty() {
             x_cursor -= self.style.spacing;
         }
@@ -450,13 +489,14 @@ impl LayoutSolver for HorizontalWidget {
 /// [`VerticalWidget`] builder.
 #[derive(Debug, Clone)]
 pub struct Vertical {
-    pub spacing: f64,
+    pub spacing: f32,
 }
 
 impl Vertical {
-    pub fn new(spacing: f64) -> Self {
+    pub fn new(spacing: f32) -> Self {
         Self { spacing }
     }
+
     pub fn show(
         self,
         builder: &mut Builder,
@@ -476,7 +516,7 @@ pub struct VerticalWidget {
     pub children: Vec<NodeId>,
 }
 
-impl LayoutSolver for VerticalWidget {
+impl Widget for VerticalWidget {
     fn build(
         &self,
         _node: &RectNode,
@@ -493,12 +533,12 @@ impl LayoutSolver for VerticalWidget {
             positioner.set(*id, Vec2::new(0.0, y_cursor));
 
             y_cursor += child_size.height + self.style.spacing;
-            // Track the widest child
+            // Track the widest child.
             if child_size.width > max_width {
                 max_width = child_size.width;
             }
         }
-        // Remove the last added spacing
+        // Remove the last added spacing.
         if !self.children.is_empty() {
             y_cursor -= self.style.spacing;
         }
@@ -510,14 +550,14 @@ impl LayoutSolver for VerticalWidget {
 /// [`PaddingWidget`] builder.
 #[derive(Debug, Clone, Copy)]
 pub struct Padding {
-    pub left: f64,
-    pub right: f64,
-    pub top: f64,
-    pub bottom: f64,
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
 }
 
 impl Padding {
-    fn all(padding: f64) -> Self {
+    fn all(padding: f32) -> Self {
         Self {
             left: padding,
             right: padding,
@@ -545,36 +585,20 @@ pub struct PaddingWidget {
     pub child: NodeId,
 }
 
-impl LayoutSolver for PaddingWidget {
-    fn constraint(
-        &self,
-        parent_constraint: Constraint,
-    ) -> Constraint {
-        let Padding {
-            left,
-            right,
-            top,
-            bottom,
-        } = self.style;
+impl Widget for PaddingWidget {
+    fn constraint(&self, parent: Constraint) -> Constraint {
+        let h_pad = self.style.left + self.style.right;
+        let v_pad = self.style.top + self.style.bottom;
 
         Constraint {
-            // Subtract horizontal padding from width
-            width: parent_constraint
-                .width
-                .map(|w| (w - (left + right)).max(0.0)),
-            // Subtract vertical padding from height
-            height: parent_constraint
-                .height
-                .map(|h| (h - (top + bottom)).max(0.0)),
+            min: Size::ZERO,
+            max: Size {
+                width: (parent.max.width - h_pad).max(0.0),
+                height: (parent.max.height - v_pad).max(0.0),
+            },
         }
     }
 
-    /// Determines the final size and position of the padding widget and its child.
-    ///
-    /// Retrieves the child's final calculated size.
-    /// Offsets the child's position by the padding amount.
-    /// Returns the total size of this widget,
-    /// which includes the child's size plus the padding on all sides.
     fn build(
         &self,
         _node: &RectNode,
@@ -591,7 +615,7 @@ impl LayoutSolver for PaddingWidget {
         let child_node = tree.get(&self.child);
         let child_size = child_node.size();
 
-        // Position the child with the specified padding offsets
+        // Position the child with the specified padding offsets.
         positioner.set(self.child, Vec2::new(left, top));
 
         Size::new(
@@ -601,17 +625,17 @@ impl LayoutSolver for PaddingWidget {
     }
 }
 
-/// A widget that forces a specific size that ignore parent constraints.
+/// A widget that forces a specific size that ignores parent constraints.
 #[derive(Debug, Clone)]
 pub struct FixedSizeWidget {
     pub size: Size,
     pub color: Color,
 }
 
-impl LayoutSolver for FixedSizeWidget {
+impl Widget for FixedSizeWidget {
     fn constraint(&self, _parent: Constraint) -> Constraint {
-        // Fixed size yield fixed contraint.
-        Constraint::fixed(self.size.width, self.size.height)
+        // Fixed size yields a tight constraint.
+        Constraint::tight(self.size)
     }
 
     fn build(

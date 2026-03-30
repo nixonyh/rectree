@@ -1,5 +1,6 @@
-use kurbo::Size;
 use std::num::NonZeroUsize;
+
+use rectree::Size;
 use std::sync::Arc;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
@@ -140,8 +141,10 @@ impl<'s, D: VelloDemo> VelloWinitApp<'s, D> {
         let logical_width = size.width as f64 / scale_factor;
         let logical_height = size.height as f64 / scale_factor;
 
-        self.demo
-            .size_changed(Size::new(logical_width, logical_height));
+        self.demo.size_changed(Size::new(
+            logical_width as f32,
+            logical_height as f32,
+        ));
     }
 }
 

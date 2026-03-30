@@ -1,9 +1,8 @@
 use bitflags::bitflags;
 use hashbrown::HashSet;
-use kurbo::{Rect, Size, Vec2};
 
 use crate::NodeId;
-use crate::layout::Constraint;
+use crate::layout::{Constraint, Size, Vec2};
 
 /// An axis-aligned rectangle in the layout tree.
 ///
@@ -46,38 +45,28 @@ impl RectNode {
         Self::default()
     }
 
-    pub fn from_translation(translation: impl Into<Vec2>) -> Self {
+    pub fn from_translation(translation: Vec2) -> Self {
         Self::new().with_translation(translation)
     }
 
-    pub fn from_size(size: impl Into<Size>) -> Self {
+    pub fn from_size(size: Size) -> Self {
         Self::new().with_size(size)
     }
 
     pub fn from_translation_size(
-        translation: impl Into<Vec2>,
-        size: impl Into<Size>,
+        translation: Vec2,
+        size: Size,
     ) -> Self {
         Self::new().with_translation(translation).with_size(size)
     }
 
-    pub fn from_rect(rect: impl Into<Rect>) -> Self {
-        let rect: Rect = rect.into();
-        Self::new()
-            .with_translation(Vec2::new(rect.min_x(), rect.min_y()))
-            .with_size(rect.size())
-    }
-
-    pub fn with_translation(
-        mut self,
-        translation: impl Into<Vec2>,
-    ) -> Self {
-        self.translation = translation.into();
+    pub fn with_translation(mut self, translation: Vec2) -> Self {
+        self.translation = translation;
         self
     }
 
-    pub fn with_size(mut self, size: impl Into<Size>) -> Self {
-        self.size = size.into();
+    pub fn with_size(mut self, size: Size) -> Self {
+        self.size = size;
         self
     }
 
@@ -134,17 +123,6 @@ impl RectNode {
     /// and must not be modified externally.
     pub fn depth(&self) -> u32 {
         self.depth
-    }
-
-    /// Compute the world space [`Rect`] from
-    /// [`Self::world_translation`] and [`Self::size`].
-    pub fn world_rect(&self) -> Rect {
-        Rect::new(
-            self.world_translation.x,
-            self.world_translation.y,
-            self.world_translation.x + self.size.width,
-            self.world_translation.y + self.size.height,
-        )
     }
 
     /// Returns `true` if [`Self::parent`] is `None`.

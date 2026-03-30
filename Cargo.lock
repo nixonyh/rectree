@@ -1421,7 +1421,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.10.0",
  "hashbrown 0.16.1",
- "kurbo",
  "sparse_map",
 ]
 

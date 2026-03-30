@@ -12,10 +12,4 @@ readme = "README.md"
 [dependencies]
 sparse_map.workspace = true
 hashbrown.workspace = true
-kurbo.workspace = true
 bitflags.workspace = true
-
-[features]
-default = ["std"]
-std = ["kurbo/std"]
-libm = ["kurbo/libm"]

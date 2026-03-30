@@ -11,10 +11,10 @@ use alloc::vec;
 use hashbrown::HashSet;
 use sparse_map::{Key, SparseMap};
 
-use crate::layout::DepthNode;
-
-pub use kurbo;
-pub use node::RectNode;
+pub use layout::{
+    Constraint, DepthNode, Layouter, Positioner, Size, Vec2,
+};
+pub use node::{NodeState, RectNode};
 
 pub mod layout;
 pub mod node;
