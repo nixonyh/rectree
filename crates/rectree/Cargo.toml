@@ -10,6 +10,4 @@ categories = ["gui", "data-structures", "no-std"]
 readme = "README.md"
 
 [dependencies]
-sparse_map.workspace = true
-hashbrown.workspace = true
 bitflags.workspace = true

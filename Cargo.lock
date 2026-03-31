@@ -1420,8 +1420,6 @@ name = "rectree"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.10.0",
- "hashbrown 0.16.1",
- "sparse_map",
 ]
 
 [[package]]
@@ -1635,12 +1633,6 @@ checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "sparse_map"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "839b579eddeb504ed4349054948eb9f02245488eddab69672e6d8a91a64f448a"
 
 [[package]]
 name = "spatree"

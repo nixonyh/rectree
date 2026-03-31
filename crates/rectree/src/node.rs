@@ -1,191 +1,159 @@
 use bitflags::bitflags;
-use hashbrown::HashSet;
 
-use crate::NodeId;
-use crate::layout::{Constraint, Size, Vec2};
+use crate::geom::{Constraint, Size, Vec2};
 
-/// An axis-aligned rectangle in the layout tree.
+/// Per-node layout data stored in [`crate::RectNodes`].
 ///
-/// The rectangle is defined in **local space** by a translation and
-/// a size. `local_translation` denotes the **top-left corner**
-/// relative to the parent. The final position in world space is
-/// stored in `world_translation` after layout resolution.
-///
-/// ```text
-/// translation
-/// ^
-/// +--------+
-/// |        | height
-/// +--------+
-///   width
-/// ```
-#[derive(Default, Debug, Clone)]
-pub struct RectNode {
-    /// See [`Self::translation()`].
-    pub(crate) translation: Vec2,
-    /// See [`Self::size()`].
-    pub(crate) size: Size,
-    /// See [`Self::parent_constraint()`].
-    pub(crate) parent_constraint: Constraint,
-    /// See [`Self::world_translation()`].
-    pub(crate) world_translation: Vec2,
-    /// See [`Self::parent()`].
-    pub(crate) parent: Option<NodeId>,
-    /// See [`Self::children()`].
-    pub(crate) children: HashSet<NodeId>,
-    /// See [`Self::depth()`].
-    pub(crate) depth: u32,
-    /// The state of the current node.
-    pub(crate) state: NodeState,
+/// A `RectNode` holds all the numbers that rectree reads and
+/// writes during a layout cycle. It carries no widget logic;
+/// that lives in your [`crate::Rectree`] implementation.
+pub struct RectNode<Id> {
+    /// The parent node's ID, or `None` for root nodes.
+    ///
+    /// Used by the rebuild pass to walk upward when a child's
+    /// size changes.
+    pub parent_id: Option<Id>,
+
+    /// Flags tracking which layout passes are current for this
+    /// node.
+    ///
+    /// Check and clear these flags to control incremental
+    /// re-layout.
+    pub state: NodeState,
+
+    /// The constraint imposed on this node by its parent.
+    ///
+    /// Written by [`crate::constrain`]; read by [`crate::build`].
+    pub constraint: Constraint,
+
+    /// The resolved size of this node.
+    ///
+    /// Written by [`crate::build`]; read by parent nodes during
+    /// their own build step and by
+    /// [`crate::propagate_translation`].
+    pub size: Size,
+
+    /// Local translation relative to the parent node's origin.
+    ///
+    /// Written by the parent's build step via
+    /// `RectContext::set_translation`. Zero by default.
+    pub translation: Vec2,
+
+    /// Absolute world-space position of this node's origin.
+    ///
+    /// Written by [`crate::propagate_translation`] as the sum of
+    /// all ancestor translations. Use this value for rendering.
+    pub world_translation: Vec2,
 }
 
-/// Builders.
-impl RectNode {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn from_translation(translation: Vec2) -> Self {
-        Self::new().with_translation(translation)
-    }
-
-    pub fn from_size(size: Size) -> Self {
-        Self::new().with_size(size)
-    }
-
-    pub fn from_translation_size(
-        translation: Vec2,
-        size: Size,
-    ) -> Self {
-        Self::new().with_translation(translation).with_size(size)
-    }
-
-    pub fn with_translation(mut self, translation: Vec2) -> Self {
-        self.translation = translation;
-        self
-    }
-
-    pub fn with_size(mut self, size: Size) -> Self {
-        self.size = size;
-        self
-    }
-
-    pub fn with_parent(mut self, parent: NodeId) -> Self {
-        self.parent = Some(parent);
-        self
-    }
-}
-
-/// Getters.
-impl RectNode {
-    /// Local translation, relative to the parent.
-    pub fn translation(&self) -> Vec2 {
-        self.translation
-    }
-
-    /// Size of the node.
-    ///
-    /// This is the resolved size after
-    /// [`crate::layout::LayoutWorld::build()`].
-    pub fn size(&self) -> Size {
-        self.size
-    }
-
-    /// Constraint imposed by the parent onto this node.
-    ///
-    /// This is computed during the top-down constraint pass via
-    /// [`crate::layout::LayoutWorld::constraint()`].
-    pub fn parent_constraint(&self) -> Constraint {
-        self.parent_constraint
-    }
-
-    /// World-space translation of this node.
-    ///
-    /// This is the accumulated translation from the root and is
-    /// computed during transform propagation.
-    pub fn world_translation(&self) -> Vec2 {
-        self.world_translation
-    }
-
-    /// Parent node in the hierarchy, if any.
-    pub fn parent(&self) -> Option<NodeId> {
-        self.parent
-    }
-
-    /// Child nodes of this node.
-    pub fn children(&self) -> &HashSet<NodeId> {
-        &self.children
-    }
-
-    /// How deep in the hierarchy is this node (0 for root nodes).
-    ///
-    /// This value is assigned and maintained by [`crate::Rectree`]
-    /// and must not be modified externally.
-    pub fn depth(&self) -> u32 {
-        self.depth
-    }
-
-    /// Returns `true` if [`Self::parent`] is `None`.
-    pub fn is_root(&self) -> bool {
-        self.parent.is_none()
+impl<Id> RectNode<Id> {
+    /// Creates a new node with the given parent and all other
+    /// fields at their defaults (`Constraint::unbounded()`,
+    /// `Size::ZERO`, `Vec2::ZERO`, empty [`NodeState`]).
+    pub fn new(parent_id: Option<Id>) -> Self {
+        Self {
+            parent_id,
+            state: NodeState::default(),
+            constraint: Constraint::default(),
+            size: Size::default(),
+            translation: Vec2::default(),
+            world_translation: Vec2::default(),
+        }
     }
 }
 
 bitflags! {
-    #[derive(Default, Debug, Clone, Copy)]
+    /// Tracks which layout passes have completed for a [`RectNode`].
+    ///
+    /// Each pass sets its flag when it finishes processing a node.
+    /// Before processing, a pass checks the flag and skips the
+    /// node (and its subtree) if it is already set and the
+    /// relevant input is unchanged.
+    ///
+    /// Clearing a flag (via `needs_*`) schedules the node for
+    /// reprocessing on the next layout call.
+    ///
+    /// # Flag lifecycle
+    ///
+    /// | Event                          | Flags changed                      |
+    /// | ------------------------------ | ---------------------------------- |
+    /// | Node created or [`Self::reset`]| all cleared                        |
+    /// | Constraint passes through      | `CONSTRAINED` set                  |
+    /// | Constraint changes             | `CONSTRAINED` set, `BUILT` cleared |
+    /// | Build completes                | `BUILT` set, `POSITIONED` cleared  |
+    /// | Translation propagated         | `POSITIONED` set                   |
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
     pub struct NodeState: u8 {
-        const POSITIONED = 1;
+        /// Set by [`crate::propagate_translation`] when
+        /// `world_translation` is current.
+        const POSITIONED  = 1;
+
+        /// Set by [`crate::constrain`] when the stored constraint
+        /// matches the value last propagated from the parent.
         const CONSTRAINED = 1 << 1;
-        const BUILT = 1 << 2;
+
+        /// Set by [`crate::build`] or [`crate::build_up`] when
+        /// `size` and child translations are current.
+        const BUILT       = 1 << 2;
     }
 }
 
 impl NodeState {
-    /// Returns the [`Self::POSITIONED`] flag value.
-    pub fn positioned(&self) -> bool {
-        self.intersects(Self::POSITIONED)
-    }
-
-    /// Returns the [`Self::CONSTRAINED`] flag value.
-    pub fn constrained(&self) -> bool {
-        self.intersects(Self::CONSTRAINED)
-    }
-
-    /// Returns the [`Self::BUILT`] flag value.
-    pub fn built(&self) -> bool {
-        self.intersects(Self::BUILT)
-    }
-
+    /// Clears all flags, scheduling the node for a full
+    /// re-layout.
     pub fn reset(&mut self) {
         *self = Self::empty();
     }
 
-    /// Set [`Self::POSITIONED`] flag to `false`.
+    /// Returns `true` when all three passes are current.
+    ///
+    /// Used by the `layout` free function to short-circuit the
+    /// entire cycle.
+    pub fn is_ready(&self) -> bool {
+        *self == Self::all()
+    }
+
+    /// Returns `true` if the `POSITIONED` flag is set.
+    pub fn is_positioned(&self) -> bool {
+        self.intersects(Self::POSITIONED)
+    }
+
+    /// Returns `true` if the `CONSTRAINED` flag is set.
+    pub fn is_constrained(&self) -> bool {
+        self.intersects(Self::CONSTRAINED)
+    }
+
+    /// Returns `true` if the `BUILT` flag is set.
+    pub fn is_built(&self) -> bool {
+        self.intersects(Self::BUILT)
+    }
+
+    /// Clears `POSITIONED`, marking translation as stale.
     pub fn needs_reposition(&mut self) {
         self.remove(Self::POSITIONED);
     }
 
-    /// Set [`Self::CONSTRAINED`] flag to `false`.
+    /// Clears `CONSTRAINED`, marking constraint as stale.
     pub fn needs_reconstrain(&mut self) {
         self.remove(Self::CONSTRAINED);
     }
 
-    /// Set [`Self::BUILT`] flag to `false`.
+    /// Clears `BUILT`, marking size and translations as stale.
     pub fn needs_rebuild(&mut self) {
         self.remove(Self::BUILT);
     }
 
-    /// Set [`Self::POSITIONED`] flag to `true`.
+    /// Sets `POSITIONED`, marking translation as current.
     pub fn has_repositioned(&mut self) {
         self.insert(Self::POSITIONED);
     }
 
-    /// Set [`Self::CONSTRAINED`] flag to `true`.
-    pub fn has_recontrained(&mut self) {
+    /// Sets `CONSTRAINED`, marking constraint as current.
+    pub fn has_reconstrained(&mut self) {
         self.insert(Self::CONSTRAINED);
     }
 
-    /// Set [`Self::BUILT`] flag to `true`.
+    /// Sets `BUILT`, marking size and translations as current.
     pub fn has_rebuilt(&mut self) {
         self.insert(Self::BUILT);
     }

@@ -3,218 +3,410 @@
 
 extern crate alloc;
 
-use core::fmt::{Display, Formatter};
-use core::ops::Deref;
-
-use alloc::collections::btree_set::BTreeSet;
-use alloc::vec;
-use hashbrown::HashSet;
-use sparse_map::{Key, SparseMap};
-
-pub use layout::{
-    Constraint, DepthNode, Layouter, Positioner, Size, Vec2,
-};
+pub use geom::{Constraint, Size, Vec2};
 pub use node::{NodeState, RectNode};
 
-pub mod layout;
+pub mod geom;
 pub mod node;
 
-/// A hierarchical tree of rectangular layout nodes.
+/// Tree structure and per-node layout logic for a rectree hierarchy.
 ///
-/// `Rectree` maintains parent–child relationships between [`RectNode`]s,
-/// supports multiple root nodes, and provides stable [`NodeId`]s for
-/// insertion, lookup, and removal.
-///
-/// The tree owns all nodes and ensures structural consistency when
-/// inserting or removing subtrees.
-#[derive(Default, Debug)]
-pub struct Rectree {
-    /// Identifiers of all root nodes (nodes without a parent).
-    root_ids: HashSet<NodeId>,
-    /// Storage for all nodes in the tree, indexed by [`NodeId`].
+/// `Rectree` is the read-only half of the layout split. It defines
+/// how nodes are connected ([`Self::children`]) and how each node
+/// computes its constraint ([`Self::constrain`]) and size
+/// ([`Self::build`]). The mutable per-node data lives separately in
+/// [`RectNodes`].
+pub trait Rectree {
+    type Id;
+
+    /// Returns the direct children of `id` in layout order.
+    fn children(
+        &self,
+        id: &Self::Id,
+    ) -> impl IntoIterator<Item = &Self::Id>;
+
+    /// Derives the constraint this node passes to its children
+    /// from the constraint `parent` imposed on this node.
     ///
-    /// This uses a sparse map to provide stable identifiers while
-    /// allowing efficient insertion and removal.
-    nodes: SparseMap<RectNode>,
-    /// Nodes scheduled for relayout, ordered by depth.
+    /// Most nodes return `parent` unchanged (pass-through). A
+    /// padding container would subtract its insets; a fixed-size
+    /// container would ignore `parent` and return a tight
+    /// constraint.
     ///
-    /// Deeper nodes are processed first to ensure children are laid
-    /// out before their parents.
-    scheduled_relayout: BTreeSet<DepthNode>,
+    /// Called top-down by [`constrain`].
+    fn constrain(
+        &self,
+        id: &Self::Id,
+        parent: Constraint,
+    ) -> Constraint;
+
+    /// Measures this node given `constraint` and the already-built
+    /// children, returning the node's resolved [`Size`].
+    ///
+    /// Children are guaranteed to be fully built before this is
+    /// called (bottom-up ordering). The implementation may:
+    ///
+    /// - Read child sizes via `nodes.get_size(child_id)`.
+    /// - Write child local translations via
+    ///   `nodes.set_translation(child_id, pos)`.
+    ///
+    /// It must not mutate child sizes. `nodes` is a [`RectContext`]
+    /// which intentionally limits access to reads and translation
+    /// writes only.
+    ///
+    /// Called bottom-up by [`build`].
+    fn build<N: RectContext<Id = Self::Id>>(
+        &self,
+        id: &Self::Id,
+        constraint: Constraint,
+        nodes: &mut N,
+    ) -> Size;
 }
 
-/// Builders.
-impl Rectree {
-    /// Creates an empty [`Rectree`].
-    ///
-    /// This is equivalent to calling [`Default::default`].
-    pub fn new() -> Self {
-        Self::default()
+/// Flat storage for [`RectNode`]s keyed by an application-defined
+/// `Id`.
+///
+/// This is the mutable half of the layout split. It holds only
+/// per-node numbers (`constraint`, `size`, `translation`) and
+/// exposes them to the rectree free functions. It knows nothing
+/// about tree structure or layout logic; those live in [`Rectree`].
+///
+/// Any type that implements `RectNodes` automatically implements
+/// [`RectContext`] through a blanket impl.
+///
+/// # Splitting storage from tree logic
+///
+/// rectree's free functions take `tree: &T` and `nodes: &mut N`
+/// as two separate arguments. This lets Rust borrow `T` immutably
+/// (for traversal and logic) and `N` mutably (for data writes) at
+/// the same time, which would be impossible if a single type owned
+/// both.
+pub trait RectNodes {
+    type Id;
+
+    fn get_node(&self, id: &Self::Id) -> Option<&RectNode<Self::Id>>;
+
+    fn get_node_mut(
+        &mut self,
+        id: &Self::Id,
+    ) -> Option<&mut RectNode<Self::Id>>;
+}
+
+/// Blanket impl: any [`RectNodes`] storage is automatically a
+/// [`RectContext`].
+///
+/// This means you never implement `RectContext` by hand. Just
+/// implement `RectNodes` and the restricted build-time view
+/// comes for free.
+impl<N: RectNodes> RectContext for N {
+    type Id = N::Id;
+
+    fn get_size(&self, id: &Self::Id) -> Size {
+        self.get_node(id).map(|n| n.size).unwrap_or(Size::ZERO)
     }
 
-    /// Inserts a node into the tree while keeping track of the
-    /// parent-child relationship.
+    fn set_translation(&mut self, id: &Self::Id, translation: Vec2) {
+        if let Some(n) = self.get_node_mut(id) {
+            n.translation = translation;
+        }
+    }
+}
+
+/// Restricted view of [`RectNodes`] exposed to [`Rectree::build`].
+///
+/// During the build pass, a widget must be able to:
+///
+/// - Read the resolved [`Size`] of its children (`get_size`).
+/// - Write local translations to position its children
+///   (`set_translation`).
+///
+/// It must not mutate child sizes directly, because the build
+/// pass processes nodes bottom-up and a size written here would
+/// silently invalidate the ordering guarantee.
+///
+/// `RectContext` is never implemented manually. Any type that
+/// implements [`RectNodes`] gets `RectContext` for free through
+/// a blanket impl in `lib.rs`.
+pub trait RectContext {
+    type Id;
+
+    /// Returns the resolved size of the node identified by `id`.
     ///
-    /// # Panics
+    /// Returns [`Size::ZERO`] if the id is not found.
+    fn get_size(&self, id: &Self::Id) -> Size;
+
+    /// Sets the local translation of the node identified by `id`.
     ///
-    /// Panics if an invalid parent [`NodeId`] is used.
-    pub fn insert(&mut self, mut node: RectNode) -> NodeId {
-        let key = self.nodes.insert_with_key(|nodes, key| {
-            let id = NodeId(key);
-            if let Some(parent) = node.parent {
-                let parent_node =
-                    nodes.get_mut(&parent).unwrap_or_else(|| {
-                        panic!("Invalid parent Id ({parent}).")
-                    });
+    /// This is the position relative to the parent's origin.
+    /// [`propagate_translation`] later accumulates these
+    /// into absolute world positions.
+    fn set_translation(&mut self, id: &Self::Id, position: Vec2);
+}
 
-                parent_node.children.insert(id);
-                node.depth = parent_node.depth + 1;
-            } else {
-                // No parent, meaning that it's a root id.
-                self.root_ids.insert(id);
-            }
+/// Runs a full layout cycle on the subtree rooted at `id`.
+///
+/// Executes the three passes in order:
+///
+/// 1. [`constrain`] (top-down): propagates constraints from
+///    parent to children.
+/// 2. [`build`] (bottom-up): measures nodes and writes child
+///    translations.
+/// 3. [`propagate_translation`] (top-down): accumulates local
+///    translations into absolute `world_translation` values.
+///
+/// Each pass is short-circuited by [`NodeState`] flags so only
+/// nodes that actually changed are reprocessed. To force a full
+/// re-layout of the subtree, reset the root node's state before
+/// calling:
+///
+/// ```rust,ignore
+/// nodes.get_node_mut(&root_id).unwrap().state.reset();
+/// layout(&tree, &mut nodes, &root_id);
+/// ```
+///
+/// If the node's size changes and it has a parent, the parent
+/// and ancestors are re-measured via an upward rebuild pass
+/// before translation is propagated.
+///
+/// # Panics
+///
+/// Panics if `id` is not present in `nodes`.
+pub fn layout<
+    Id: Copy,
+    T: Rectree<Id = Id>,
+    N: RectNodes<Id = Id>,
+>(
+    tree: &T,
+    nodes: &mut N,
+    id: &Id,
+) {
+    let node = nodes.get_node(id).expect("Id is invalid!");
 
-            self.scheduled_relayout
-                .insert(DepthNode::new(node.depth, id));
+    let old_size = node.size;
+    let parent = node.parent_id;
 
-            node
-        });
-
-        NodeId(key)
+    if node.state.is_ready() {
+        return;
     }
 
-    /// Removes a node and all of its descendants from the tree.
-    ///
-    /// Returns `true` if the node existed and was removed, or `false`
-    /// if the given [`NodeId`] does not exist.
-    pub fn remove(&mut self, id: &NodeId) -> bool {
-        if let Some(node) = self.nodes.get(id) {
-            if let Some(parent) =
-                node.parent.and_then(|id| self.nodes.get_mut(&id))
-            {
-                // Bookeeping.
-                parent.children.remove(id);
-            } else {
-                // No parent, meaning that it's a root id.
-                self.root_ids.remove(id);
-            }
+    // 1. Constrain down the hierarchy.
+    constrain(tree, nodes, id, node.constraint);
 
-            self.remove_recursive(id);
-            return true;
+    // 2. Build sizes up the hierarchy.
+    build(tree, nodes, id);
+
+    let new_size = nodes.get_size(id);
+
+    // Size changed; propagate upward without re-traversing children.
+    let mut bubbled_id = *id;
+    if new_size != old_size
+        && let Some(ref parent_id) = parent
+    {
+        bubbled_id = build_up(tree, nodes, parent_id);
+    }
+
+    // 3. Propagate translation.
+    let parent_world = nodes
+        .get_node(&bubbled_id)
+        .expect("Id is invalid!")
+        .world_translation;
+    propagate_translation(tree, nodes, &bubbled_id, parent_world);
+}
+
+/// Propagates a constraint top-down through the subtree rooted
+/// at `id`.
+///
+/// `parent` is the constraint imposed on this node by its
+/// parent. It is stored on the node then narrowed via
+/// [`Rectree::constrain`] to produce the constraint passed to
+/// children.
+///
+/// # Short-circuit behaviour
+///
+/// If the node already has the [`NodeState::CONSTRAINED`] flag
+/// set and the incoming constraint is unchanged, the entire
+/// subtree is skipped. Otherwise the flag is set, the stored
+/// constraint is updated, and propagation continues to children.
+///
+/// When the constraint changes, the [`NodeState::BUILT`] flag is
+/// also cleared so the subsequent [`build`] pass re-measures the
+/// node.
+///
+/// # Panics
+///
+/// Panics if `id` is not present in `nodes`.
+pub fn constrain<Id, T: Rectree<Id = Id>, N: RectNodes<Id = Id>>(
+    tree: &T,
+    nodes: &mut N,
+    id: &T::Id,
+    parent: Constraint,
+) {
+    let node = nodes.get_node(id).expect("Id is invalid!");
+
+    let old_constraint = node.constraint;
+    let constraint_unchanged = parent == old_constraint;
+
+    if let Some(n) = nodes.get_node_mut(id) {
+        // Skip the subtree if the constraint stays the same.
+        if n.state.is_constrained() && constraint_unchanged {
+            return;
         }
 
-        false
-    }
+        n.state.has_reconstrained();
 
-    /// Recursively removes a node and all of its descendants.
-    ///
-    /// This is an internal helper used by [`Self::remove()`].
-    /// It assumes that any necessary parent bookkeeping has already
-    /// been handled.
-    fn remove_recursive(&mut self, id: &NodeId) {
-        let mut child_stack = vec![*id];
-
-        while let Some(id) = child_stack.pop() {
-            let node = self.get(&id);
-
-            child_stack.extend(node.children());
-            self.nodes.remove(&id);
+        n.constraint = parent;
+        // Constraint changed means the built size is now stale.
+        if !constraint_unchanged {
+            n.state.needs_rebuild();
         }
     }
-}
 
-/// Node retrieval.
-impl Rectree {
-    /// Returns an immutable reference to a node if it exists.
-    pub fn try_get(&self, id: &NodeId) -> Option<&RectNode> {
-        self.nodes.get(id)
-    }
+    // Derive this node's constraint from the parent's.
+    let constraint = tree.constrain(id, parent);
 
-    /// Returns a mutable reference to a node if it exists.
-    fn try_get_mut(&mut self, id: &NodeId) -> Option<&mut RectNode> {
-        self.nodes.get_mut(id)
-    }
-
-    /// Returns an immutable reference to a node.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the given [`NodeId`] does not exist in the tree.
-    pub fn get(&self, id: &NodeId) -> &RectNode {
-        self.try_get(id).unwrap_or_else(|| {
-            panic!("{id} does not exists in tree.")
-        })
-    }
-
-    /// Returns a mutable reference to a node.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the given [`NodeId`] does not exist in the tree.
-    fn get_mut(&mut self, id: &NodeId) -> &mut RectNode {
-        self.try_get_mut(id).unwrap_or_else(|| {
-            panic!("{id} does not exists in tree.")
-        })
-    }
-
-    /// Returns the set of root node identifiers.
-    ///
-    /// Root nodes are nodes that do not have a parent.
-    pub fn root_ids(&self) -> &HashSet<NodeId> {
-        &self.root_ids
-    }
-
-    /// Returns an immutable reference to a node.
-    ///
-    /// This is a workaround for [`Self::get()`] due to lifetime
-    /// constraints.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the given [`NodeId`] does not exist in the tree.
-    #[expect(dead_code)]
-    fn get_node<'a>(
-        nodes: &'a SparseMap<RectNode>,
-        id: &NodeId,
-    ) -> &'a RectNode {
-        nodes.get(id).unwrap_or_else(|| {
-            panic!("{id} does not exists in tree.")
-        })
-    }
-
-    /// Returns a mutable reference to a node.
-    ///
-    /// This is a workaround for [`Self::get_mut()`] due to lifetime
-    /// constraints.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the given [`NodeId`] does not exist in the tree.
-    fn get_node_mut<'a>(
-        nodes: &'a mut SparseMap<RectNode>,
-        id: &NodeId,
-    ) -> &'a mut RectNode {
-        nodes.get_mut(id).unwrap_or_else(|| {
-            panic!("{id} does not exists in tree.")
-        })
+    // Propagate the resolved constraint down to children.
+    for child in tree.children(id) {
+        constrain(tree, nodes, child, constraint);
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord,
-)]
-pub struct NodeId(Key);
+/// Recursively builds the layout tree bottom-up.
+///
+/// Children are built before their parent so that each parent
+/// can read child sizes when computing its own size. After
+/// measuring, the node's [`NodeState::BUILT`] flag is set and
+/// its [`NodeState::POSITIONED`] flag is cleared because a new
+/// size may require new child translations.
+///
+/// # Short-circuit behaviour
+///
+/// If the node's [`NodeState::BUILT`] flag is already set, the
+/// entire subtree is skipped - its sizes and child translations
+/// are still current.
+///
+/// # Panics
+///
+/// Panics if `id` is not present in `nodes`.
+pub fn build<Id, T: Rectree<Id = Id>, N: RectNodes<Id = Id>>(
+    tree: &T,
+    nodes: &mut N,
+    id: &T::Id,
+) {
+    let node = nodes.get_node(id).expect("Id is invalid!");
 
-impl Deref for NodeId {
-    type Target = Key;
+    // Already up-to-date; skip this entire subtree.
+    if node.state.is_built() {
+        return;
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    let constraint = node.constraint;
+
+    for child in tree.children(id) {
+        build(tree, nodes, child);
+    }
+
+    // All children are now measured; measure self.
+    let size = tree.build(id, constraint, nodes);
+
+    if let Some(n) = nodes.get_node_mut(id) {
+        n.size = size;
+        n.state.needs_reposition();
+        n.state.has_rebuilt();
     }
 }
 
-impl Display for NodeId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("NodeId({})", self.0))
+/// Re-measures a single node and walks upward if its size
+/// changed.
+///
+/// Called after a child's size change has already been
+/// recorded. Unlike [`build`], it does not recurse into
+/// children. It assumes their sizes in `nodes` are current
+/// and re-invokes [`Rectree::build`] on `id` to let it
+/// re-measure from the current child sizes.
+///
+/// If the resulting size differs from the previous one, the
+/// parent is re-measured recursively until the size stabilises
+/// or a root is reached. Returns the highest node that was
+/// re-measured, used as the start for [`propagate_translation`].
+///
+/// # Panics
+///
+/// Panics if `id` is not present in `nodes`.
+pub fn build_up<
+    Id: Copy,
+    T: Rectree<Id = Id>,
+    N: RectNodes<Id = Id>,
+>(
+    tree: &T,
+    nodes: &mut N,
+    id: &T::Id,
+) -> Id {
+    let node = nodes.get_node(id).expect("Id is invalid!");
+
+    let constraint = node.constraint;
+    let old_size = node.size;
+    let parent = nodes.get_node(id).and_then(|n| n.parent_id);
+
+    let size = tree.build(id, constraint, nodes);
+
+    if let Some(n) = nodes.get_node_mut(id) {
+        n.size = size;
+        n.state.needs_reposition();
+        n.state.has_rebuilt();
+    }
+
+    if size != old_size
+        && let Some(ref parent_id) = parent
+    {
+        return build_up(tree, nodes, parent_id);
+    }
+
+    *id
+}
+
+/// Propagates world-space translations top-down through the
+/// subtree.
+///
+/// `parent_world` is the absolute world translation of `id`'s
+/// parent (use [`Vec2::ZERO`] for root nodes). For each node
+/// the world translation is computed as
+/// `parent_world + node.translation` and stored in
+/// `node.world_translation`.
+///
+/// # Short-circuit behaviour
+///
+/// If the node's [`NodeState::POSITIONED`] flag is already set,
+/// the node and its entire subtree are skipped - their world
+/// translations are still current.
+///
+/// # Panics
+///
+/// Panics if `id` is not present in `nodes`.
+pub fn propagate_translation<
+    Id,
+    T: Rectree<Id = Id>,
+    N: RectNodes<Id = Id>,
+>(
+    tree: &T,
+    nodes: &mut N,
+    id: &T::Id,
+    parent_world: Vec2,
+) {
+    let node = nodes.get_node(id).expect("Id is invalid!");
+
+    // Already up-to-date; skip this entire subtree.
+    if node.state.is_positioned() {
+        return;
+    }
+
+    let world = parent_world + node.translation;
+
+    if let Some(n) = nodes.get_node_mut(id) {
+        n.world_translation = world;
+        n.state.has_repositioned();
+    }
+
+    for child in tree.children(id) {
+        propagate_translation(tree, nodes, child, world);
     }
 }
