@@ -24,7 +24,7 @@ pub trait Rectree {
     fn children(
         &self,
         id: &Self::Id,
-    ) -> impl IntoIterator<Item = &Self::Id>;
+    ) -> impl IntoIterator<Item = Self::Id>;
 
     /// Derives the constraint this node passes to its children
     /// from the constraint `parent` imposed on this node.

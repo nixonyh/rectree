@@ -96,6 +96,7 @@ struct Tree { root: Id, child: Id }
 
 impl Rectree for Tree {
     type Id = Id;
+    type Nodes = Store;
 
     fn children(&self, id: &Id)
         -> impl IntoIterator<Item = &Id>
@@ -110,11 +111,11 @@ impl Rectree for Tree {
         parent
     }
 
-    fn build<N: NodeContext<Id = Id>>(
+    fn build(
         &self,
         id: &Id,
         constraint: Constraint,
-        _nodes: &mut N,
+        _nodes: &mut Self::Nodes,
     ) -> Size {
         if *id == self.child {
             Size::new(100.0, 50.0)
