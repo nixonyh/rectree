@@ -130,7 +130,7 @@ fn main() {
                         })
                     })
                 },
-            );
+            )
         },
     );
 
@@ -143,10 +143,6 @@ fn main() {
     event_loop.run_app(&mut app).unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// ID type
-// ---------------------------------------------------------------------------
-
 /// Opaque handle that identifies a single node.
 ///
 /// Must be `Copy + Eq + Hash` so rectree can use it as a map key
@@ -155,10 +151,6 @@ fn main() {
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
 pub struct NodeId(u32);
-
-// ---------------------------------------------------------------------------
-// Node storage  (`N: LayoutNode`)
-// ---------------------------------------------------------------------------
 
 /// Flat storage for every node's layout data.
 ///
@@ -218,45 +210,22 @@ impl RectNodes for Nodes {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tree structure + widget logic  (`T: LayoutTree`)
-// ---------------------------------------------------------------------------
-
 /// The read-only half of the layout split.
 ///
 /// `World` owns:
-/// - the widget instances (their logic),
-/// - the parent→children mapping (tree structure).
+/// - the widget instances (their logic and child relationships).
 ///
 /// It is passed as `&World` to the rectree free functions, while
 /// `&mut Nodes` is passed separately — avoiding the borrow conflict
 /// that would arise if a single type owned both.
 pub struct World {
     widgets: HashMap<NodeId, Box<dyn Widget>>,
-    /// Maps every node to its ordered list of children.
-    children: HashMap<NodeId, Vec<NodeId>>,
-    /// Nodes that have no parent (typically one: the window root).
-    roots: Vec<NodeId>,
 }
 
 impl World {
     fn new() -> Self {
         Self {
             widgets: HashMap::new(),
-            children: HashMap::new(),
-            roots: Vec::new(),
-        }
-    }
-
-    /// Register a new node in the tree.  Called by [`Builder`]
-    /// immediately after `Nodes::insert` so both halves stay in
-    /// sync.
-    fn add_node(&mut self, id: NodeId, parent: Option<NodeId>) {
-        self.children.entry(id).or_default();
-        if let Some(p) = parent {
-            self.children.entry(p).or_default().push(id);
-        } else {
-            self.roots.push(id);
         }
     }
 }
@@ -268,12 +237,16 @@ impl Rectree for World {
     type Id = NodeId;
     type Nodes = Nodes;
 
-    /// Returns the children of `id` in insertion order.
-    fn children<'a>(
-        &'a self,
+    /// Calls `f` for each child of `id` in insertion order.
+    fn for_each_child(
+        &self,
         id: &NodeId,
-    ) -> impl IntoIterator<Item = &'a NodeId> {
-        self.children.get(id).map(|v| v.as_slice()).unwrap_or(&[])
+        nodes: &mut Nodes,
+        mut f: impl FnMut(&NodeId, &mut Nodes),
+    ) {
+        if let Some(w) = self.widgets.get(id) {
+            w.for_each_child(&mut |child| f(child, nodes));
+        }
     }
 
     /// Asks the widget to derive the node's own constraint from its
@@ -282,6 +255,7 @@ impl Rectree for World {
     fn constrain(
         &self,
         id: &NodeId,
+        _nodes: &Nodes,
         parent: Constraint,
     ) -> Constraint {
         self.widgets
@@ -309,10 +283,6 @@ impl Rectree for World {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Widget trait
-// ---------------------------------------------------------------------------
-
 /// A widget defines *how* a node behaves during layout.
 ///
 /// - [`constraint`](Widget::constraint): narrows the parent's
@@ -326,16 +296,14 @@ pub trait Widget: Any {
         parent
     }
 
+    fn for_each_child(&self, _f: &mut dyn FnMut(&NodeId)) {}
+
     fn build(
         &self,
         constraint: Constraint,
         nodes: &mut Nodes,
     ) -> Size;
 }
-
-// ---------------------------------------------------------------------------
-// LayoutDemo
-// ---------------------------------------------------------------------------
 
 pub struct LayoutDemo {
     /// Read-only tree: widget logic + parent-child relationships.
@@ -370,12 +338,9 @@ impl LayoutDemo {
     /// via `NodeState` flags — so re-calling this every frame is
     /// cheap when nothing changed.
     fn layout(&mut self) {
-        for root in self.world.roots.iter() {
-            // Reset the root so the passes start fresh.  Children
-            // are only re-processed when their constraint or size
-            // actually changes, thanks to `NodeState` guards.
-            self.nodes.get_node_mut(root).unwrap().state.reset();
-            layout(&self.world, &mut self.nodes, root);
+        if let Some(root) = self.root_id {
+            self.nodes.get_node_mut(&root).unwrap().state.reset();
+            layout(&self.world, &mut self.nodes, &root);
         }
     }
 
@@ -386,74 +351,66 @@ impl LayoutDemo {
     ///   visible.
     /// - A small red dot marks each node's origin point.
     fn draw_tree(&self, scene: &mut Scene, transform: Affine) {
-        for root_id in &self.world.roots {
-            // Iterative DFS using a stack to avoid recursion limits.
-            let mut stack = vec![*root_id];
+        let Some(root_id) = self.root_id else { return };
+        // Iterative DFS using a stack to avoid recursion limits.
+        let mut stack = vec![root_id];
 
-            while let Some(node_id) = stack.pop() {
-                let Some(node) = self.nodes.get_node(&node_id) else {
-                    continue;
-                };
+        while let Some(node_id) = stack.pop() {
+            let Some(node) = self.nodes.get_node(&node_id) else {
+                continue;
+            };
 
-                // `world_translation` is set by `propagate_translation`
-                // and holds the node's absolute position in window space.
-                let world_pos = node.world_translation;
-                let size = node.size;
-                let world_rect = Rect::from_origin_size(
-                    Point::new(
-                        world_pos.x as f64,
-                        world_pos.y as f64,
-                    ),
-                    KSize::new(size.width as f64, size.height as f64),
-                );
+            // `world_translation` is set by `propagate_translation`
+            // and holds the node's absolute position in window space.
+            let world_pos = node.world_translation;
+            let size = node.size;
+            let world_rect = Rect::from_origin_size(
+                Point::new(world_pos.x as f64, world_pos.y as f64),
+                KSize::new(size.width as f64, size.height as f64),
+            );
 
-                // Only `FixedSizeWidget`s carry a fill color; other
-                // nodes are transparent (only their border is drawn).
-                if let Some(color) =
-                    self.world.widgets.get(&node_id).and_then(
-                        |widget| {
-                            let widget: &dyn Any = widget.as_ref();
-                            widget
-                                .downcast_ref::<FixedSizeWidget>()
-                                .map(|f| f.color)
-                        },
-                    )
-                {
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        color,
-                        None,
-                        &world_rect,
-                    );
-                }
-
-                // White border shows the layout box of every node.
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    Color::WHITE,
-                    None,
-                    &world_rect,
-                );
-
-                // Red dot at the node's top-left origin.
-                let origin = Circle::new(world_rect.origin(), 5.0);
+            // Only `FixedSizeWidget`s carry a fill color; other
+            // nodes are transparent (only their border is drawn).
+            if let Some(color) =
+                self.world.widgets.get(&node_id).and_then(|widget| {
+                    let widget: &dyn Any = widget.as_ref();
+                    widget
+                        .downcast_ref::<FixedSizeWidget>()
+                        .map(|f| f.color)
+                })
+            {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    css::RED,
+                    color,
                     None,
-                    &origin,
+                    &world_rect,
                 );
+            }
 
-                if let Some(children) =
-                    self.world.children.get(&node_id)
-                {
-                    for child_id in children {
-                        stack.push(*child_id);
-                    }
-                }
+            // White border shows the layout box of every node.
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                Color::WHITE,
+                None,
+                &world_rect,
+            );
+
+            // Red dot at the node's top-left origin.
+            let origin = Circle::new(world_rect.origin(), 5.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                css::RED,
+                None,
+                &origin,
+            );
+
+            if let Some(w) = self.world.widgets.get(&node_id) {
+                w.for_each_child(&mut |child_id| {
+                    stack.push(*child_id);
+                });
             }
         }
     }
@@ -507,10 +464,6 @@ impl VelloDemo for LayoutDemo {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Builder
-// ---------------------------------------------------------------------------
-
 /// Accumulates nodes into `World` and `Nodes` during tree
 /// construction.
 ///
@@ -537,7 +490,6 @@ impl Builder<'_> {
         add_content: impl FnOnce(&mut Builder) -> W,
     ) -> NodeId {
         let id = self.nodes.insert(self.parent_id);
-        self.world.add_node(id, self.parent_id);
 
         let w = Box::new(add_content(&mut Builder {
             world: self.world,
@@ -549,10 +501,6 @@ impl Builder<'_> {
         id
     }
 }
-
-// ---------------------------------------------------------------------------
-// Demo widgets
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 pub enum HAlign {
@@ -600,6 +548,10 @@ impl PlaceWidget {
 }
 
 impl Widget for PlaceWidget {
+    fn for_each_child(&self, f: &mut dyn FnMut(&NodeId)) {
+        f(&self.child);
+    }
+
     fn build(
         &self,
         constraint: Constraint,
@@ -676,6 +628,12 @@ pub struct HorizontalWidget {
 }
 
 impl Widget for HorizontalWidget {
+    fn for_each_child(&self, f: &mut dyn FnMut(&NodeId)) {
+        for child in &self.children {
+            f(child);
+        }
+    }
+
     fn build(
         &self,
         constraint: Constraint,
@@ -737,6 +695,12 @@ pub struct VerticalWidget {
 }
 
 impl Widget for VerticalWidget {
+    fn for_each_child(&self, f: &mut dyn FnMut(&NodeId)) {
+        for child in &self.children {
+            f(child);
+        }
+    }
+
     fn build(
         &self,
         constraint: Constraint,
@@ -806,6 +770,10 @@ pub struct PaddingWidget {
 }
 
 impl Widget for PaddingWidget {
+    fn for_each_child(&self, f: &mut dyn FnMut(&NodeId)) {
+        f(&self.child);
+    }
+
     /// Reduce the parent constraint by the padding amounts so the
     /// child is told it has less space to fill.
     fn constraint(&self, parent: Constraint) -> Constraint {
@@ -852,6 +820,7 @@ impl Widget for PaddingWidget {
 pub struct FixedSizeWidget {
     pub size: Size,
     pub color: Color,
+    pub child: Option<NodeId>,
 }
 
 impl FixedSizeWidget {
@@ -859,6 +828,7 @@ impl FixedSizeWidget {
         Self {
             size,
             color: Color::TRANSPARENT,
+            child: None,
         }
     }
 
@@ -872,21 +842,26 @@ impl FixedSizeWidget {
         b.add_widget(|_| self)
     }
 
-    /// Show with an inner subtree; the children are built by
-    /// `add_content` before the widget is constructed.
+    /// Show with a single inner child.
     pub fn show_with_child(
         self,
         b: &mut Builder,
-        add_content: impl FnOnce(&mut Builder),
+        add_content: impl FnOnce(&mut Builder) -> NodeId,
     ) -> NodeId {
-        b.add_widget(|b| {
-            add_content(b);
-            self
+        b.add_widget(|b| FixedSizeWidget {
+            child: Some(add_content(b)),
+            ..self
         })
     }
 }
 
 impl Widget for FixedSizeWidget {
+    fn for_each_child(&self, f: &mut dyn FnMut(&NodeId)) {
+        if let Some(child) = &self.child {
+            f(child);
+        }
+    }
+
     /// Override the parent constraint entirely with a tight box
     /// around `self.size`.  Children (if any) will be told they
     /// have exactly this much space.

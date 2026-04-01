@@ -12,7 +12,7 @@ pub mod node;
 /// Tree structure and per-node layout logic for a rectree hierarchy.
 ///
 /// `Rectree` is the read-only half of the layout split. It defines
-/// how nodes are connected ([`Self::children`]) and how each node
+/// how nodes are connected ([`Self::for_each_child`]) and how each node
 /// computes its constraint ([`Self::constrain`]) and size
 /// ([`Self::build`]). The mutable per-node data lives separately in
 /// [`RectNodes`].
@@ -20,11 +20,19 @@ pub trait Rectree {
     type Id;
     type Nodes: NodeContext<Id = Self::Id>;
 
-    /// Returns the direct children of `id` in layout order.
-    fn children(
+    /// Calls `f` for each direct child of `id` in layout order.
+    ///
+    /// `nodes` is threaded through to the closure so that
+    /// implementations that dispatch through per-node metadata
+    /// (e.g. a type-erased tree) can read it without a separate
+    /// borrow that would conflict with the `&mut Self::Nodes` held
+    /// by the calling layout pass.
+    fn for_each_child(
         &self,
         id: &Self::Id,
-    ) -> impl IntoIterator<Item = &Self::Id>;
+        nodes: &mut Self::Nodes,
+        f: impl FnMut(&Self::Id, &mut Self::Nodes),
+    );
 
     /// Derives the constraint this node passes to its children
     /// from the constraint `parent` imposed on this node.
@@ -34,10 +42,15 @@ pub trait Rectree {
     /// container would ignore `parent` and return a tight
     /// constraint.
     ///
+    /// `nodes` is a shared view of the node storage, available for
+    /// implementations that store per-node metadata (such as a
+    /// type tag) inside the nodes map rather than in the tree.
+    ///
     /// Called top-down by [`constrain`].
     fn constrain(
         &self,
         id: &Self::Id,
+        nodes: &Self::Nodes,
         parent: Constraint,
     ) -> Constraint;
 
@@ -236,7 +249,11 @@ pub fn layout<
 /// # Panics
 ///
 /// Panics if `id` is not present in `nodes`.
-pub fn constrain<Id, T: Rectree<Id = Id>, N: RectNodes<Id = Id>>(
+pub fn constrain<
+    Id,
+    T: Rectree<Id = Id, Nodes = N>,
+    N: RectNodes<Id = Id>,
+>(
     tree: &T,
     nodes: &mut N,
     id: &T::Id,
@@ -263,12 +280,12 @@ pub fn constrain<Id, T: Rectree<Id = Id>, N: RectNodes<Id = Id>>(
     }
 
     // Derive this node's constraint from the parent's.
-    let constraint = tree.constrain(id, parent);
+    let constraint = tree.constrain(id, nodes, parent);
 
     // Propagate the resolved constraint down to children.
-    for child in tree.children(id) {
+    tree.for_each_child(id, nodes, |child, nodes| {
         constrain(tree, nodes, child, constraint);
-    }
+    });
 }
 
 /// Recursively builds the layout tree bottom-up.
@@ -306,9 +323,9 @@ pub fn build<
 
     let constraint = node.constraint;
 
-    for child in tree.children(id) {
+    tree.for_each_child(id, nodes, |child, nodes| {
         build(tree, nodes, child);
-    }
+    });
 
     // All children are now measured; measure self.
     let size = tree.build(id, constraint, nodes);
@@ -389,7 +406,7 @@ pub fn build_up<
 /// Panics if `id` is not present in `nodes`.
 pub fn propagate_translation<
     Id,
-    T: Rectree<Id = Id>,
+    T: Rectree<Id = Id, Nodes = N>,
     N: RectNodes<Id = Id>,
 >(
     tree: &T,
@@ -411,7 +428,195 @@ pub fn propagate_translation<
         n.state.has_repositioned();
     }
 
-    for child in tree.children(id) {
+    tree.for_each_child(id, nodes, |child, nodes| {
         propagate_translation(tree, nodes, child, world);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::collections::BTreeMap;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn test_layout() {
+        let mut tree = WidgetTree::default();
+
+        let id0 = 0;
+        let id1 = 1;
+        let id2 = 2;
+
+        tree.add_column(id0, None, vec![id1]);
+        tree.add_column(id1, Some(id0), vec![id2]);
+        tree.add_fixed(id2, Some(id1), Size::splat(10.0));
+
+        tree.layout(&id0);
+
+        assert_eq!(tree.tree.for_each_child_calls.get(), 9);
+        assert_eq!(tree.tree.constrain_calls.get(), 3);
+        assert_eq!(tree.tree.build_calls.get(), 3);
+
+        assert!(tree.nodes.0[&id0].state.is_ready());
+
+        // On second layout, nothing should be rebuilt.
+        tree.layout(&id0);
+
+        assert_eq!(tree.tree.for_each_child_calls.get(), 9);
+        assert_eq!(tree.tree.constrain_calls.get(), 3);
+        assert_eq!(tree.tree.build_calls.get(), 3);
+    }
+
+    type Id = usize;
+
+    /// Flat node storage backed by a [`BTreeMap`].
+    #[derive(Default)]
+    struct Nodes(BTreeMap<Id, RectNode<Id>>);
+
+    impl Nodes {
+        fn add(&mut self, id: Id, parent: Option<Id>) {
+            self.0.insert(id, RectNode::new(parent));
+        }
+    }
+
+    impl RectNodes for Nodes {
+        type Id = Id;
+
+        fn get_node(&self, id: &Id) -> Option<&RectNode<Id>> {
+            self.0.get(id)
+        }
+
+        fn get_node_mut(
+            &mut self,
+            id: &Id,
+        ) -> Option<&mut RectNode<Id>> {
+            self.0.get_mut(id)
+        }
+    }
+
+    enum Widget {
+        Column(Vec<Id>),
+        Fixed(Size),
+    }
+
+    /// General-purpose test tree.
+    ///
+    /// - [`Rectree::constrain`] always passes the parent constraint
+    ///   through unchanged.
+    /// - [`Rectree::build`] returns a fixed size when one is set for
+    ///   the node; for containers it sums children widths and takes
+    ///   the maximum height; for leaves it fills `constraint.max`.
+    /// - `build_calls` counts every invocation for incremental tests.
+    #[derive(Default)]
+    struct Tree {
+        widgets: BTreeMap<Id, Widget>,
+        for_each_child_calls: Cell<u32>,
+        constrain_calls: Cell<u32>,
+        build_calls: Cell<u32>,
+    }
+
+    impl Rectree for Tree {
+        type Id = Id;
+        type Nodes = Nodes;
+
+        fn for_each_child(
+            &self,
+            id: &Id,
+            nodes: &mut Nodes,
+            mut f: impl FnMut(&Id, &mut Nodes),
+        ) {
+            self.for_each_child_calls
+                .set(self.for_each_child_calls.get() + 1);
+
+            let Some(widget) = self.widgets.get(id) else {
+                return;
+            };
+
+            if let Widget::Column(children) = widget {
+                for child in children {
+                    f(child, nodes);
+                }
+            }
+        }
+
+        fn constrain(
+            &self,
+            id: &Id,
+            _nodes: &Nodes,
+            parent: Constraint,
+        ) -> Constraint {
+            self.constrain_calls.set(self.constrain_calls.get() + 1);
+
+            let widget =
+                self.widgets.get(id).expect("Id is invalid!");
+
+            match widget {
+                Widget::Column(_) => parent,
+                Widget::Fixed(size) => Constraint::tight(*size),
+            }
+        }
+
+        fn build(
+            &self,
+            id: &Id,
+            constraint: Constraint,
+            nodes: &mut Nodes,
+        ) -> Size {
+            self.build_calls.set(self.build_calls.get() + 1);
+
+            let widget =
+                self.widgets.get(id).expect("Id is invalid!");
+
+            let size = match widget {
+                Widget::Column(children) => {
+                    let mut size = Size::ZERO;
+                    for child in children {
+                        let child_size = nodes.get_size(child);
+                        size.width = size.width.max(child_size.width);
+                        size.height += child_size.height;
+                    }
+
+                    size
+                }
+                Widget::Fixed(size) => *size,
+            };
+
+            constraint.constrain(size)
+        }
+    }
+
+    #[derive(Default)]
+    struct WidgetTree {
+        tree: Tree,
+        nodes: Nodes,
+    }
+
+    impl WidgetTree {
+        pub fn add_fixed(
+            &mut self,
+            id: Id,
+            parent: Option<Id>,
+            size: Size,
+        ) {
+            self.tree.widgets.insert(id, Widget::Fixed(size));
+            self.nodes.add(id, parent);
+        }
+
+        pub fn add_column(
+            &mut self,
+            id: Id,
+            parent: Option<Id>,
+            column: Vec<Id>,
+        ) {
+            self.tree.widgets.insert(id, Widget::Column(column));
+            self.nodes.add(id, parent);
+        }
+
+        pub fn layout(&mut self, id: &Id) {
+            layout(&self.tree, &mut self.nodes, id);
+        }
     }
 }

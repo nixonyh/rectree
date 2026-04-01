@@ -98,14 +98,19 @@ impl Rectree for Tree {
     type Id = Id;
     type Nodes = Store;
 
-    fn children(&self, id: &Id)
-        -> impl IntoIterator<Item = &Id>
-    {
-        if *id == self.root { Some(&self.child) } else { None }
+    fn for_each_child(
+        &self,
+        id: &Id,
+        _nodes: &mut Store,
+        mut f: impl FnMut(&Id, &mut Store),
+    ) {
+        if *id == self.root {
+            f(&self.child, _nodes);
+        }
     }
 
     // Pass the parent constraint to children unchanged.
-    fn constrain(&self, _: &Id, parent: Constraint)
+    fn constrain(&self, _: &Id, _nodes: &Store, parent: Constraint)
         -> Constraint
     {
         parent
