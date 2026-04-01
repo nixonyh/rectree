@@ -40,7 +40,7 @@ use std::any::Any;
 use hashbrown::HashMap;
 use kurbo::{Affine, Circle, Point, Rect, Size as KSize, Stroke};
 use rectree::{
-    Constraint, RectContext, RectNode, RectNodes, Rectree, Size,
+    Constraint, NodeContext, RectNode, RectNodes, Rectree, Size,
     Vec2, layout,
 };
 use vello::Scene;
@@ -266,6 +266,7 @@ impl World {
 /// build passes.
 impl Rectree for World {
     type Id = NodeId;
+    type Nodes = Nodes;
 
     /// Returns the children of `id` in insertion order.
     fn children<'a>(
@@ -293,14 +294,13 @@ impl Rectree for World {
     /// Children have already been built by the time this is called
     /// (bottom-up order), so their sizes are available via `nodes`.
     ///
-    /// Note: `nodes` is a [`Layouter`], not a full [`LayoutNode`].
     /// Widgets can *read* child sizes and *write* child translations
     /// — but cannot mutate child sizes directly.
-    fn build<N: RectContext<Id = NodeId>>(
+    fn build(
         &self,
         id: &NodeId,
         constraint: Constraint,
-        nodes: &mut N,
+        nodes: &mut Nodes,
     ) -> Size {
         self.widgets
             .get(id)
@@ -329,7 +329,7 @@ pub trait Widget: Any {
     fn build(
         &self,
         constraint: Constraint,
-        nodes: &mut dyn RectContext<Id = NodeId>,
+        nodes: &mut Nodes,
     ) -> Size;
 }
 
@@ -603,7 +603,7 @@ impl Widget for PlaceWidget {
     fn build(
         &self,
         constraint: Constraint,
-        nodes: &mut dyn RectContext<Id = NodeId>,
+        nodes: &mut Nodes,
     ) -> Size {
         let child_size = nodes.get_size(&self.child);
 
@@ -679,7 +679,7 @@ impl Widget for HorizontalWidget {
     fn build(
         &self,
         constraint: Constraint,
-        nodes: &mut dyn RectContext<Id = NodeId>,
+        nodes: &mut Nodes,
     ) -> Size {
         let mut height = 0.0;
         let mut width = 0.0;
@@ -740,7 +740,7 @@ impl Widget for VerticalWidget {
     fn build(
         &self,
         constraint: Constraint,
-        nodes: &mut dyn RectContext<Id = NodeId>,
+        nodes: &mut Nodes,
     ) -> Size {
         let mut width = 0.0;
         let mut height = 0.0;
@@ -824,7 +824,7 @@ impl Widget for PaddingWidget {
     fn build(
         &self,
         _constraint: Constraint,
-        nodes: &mut dyn RectContext<Id = NodeId>,
+        nodes: &mut Nodes,
     ) -> Size {
         let child_size = nodes.get_size(&self.child);
 
@@ -897,7 +897,7 @@ impl Widget for FixedSizeWidget {
     fn build(
         &self,
         _constraint: Constraint,
-        _nodes: &mut dyn RectContext<Id = NodeId>,
+        _nodes: &mut Nodes,
     ) -> Size {
         self.size
     }

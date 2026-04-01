@@ -36,7 +36,7 @@ pub struct RectNode<Id> {
     /// Local translation relative to the parent node's origin.
     ///
     /// Written by the parent's build step via
-    /// `RectContext::set_translation`. Zero by default.
+    /// `NodeContext::set_translation`. Zero by default.
     pub translation: Vec2,
 
     /// Absolute world-space position of this node's origin.

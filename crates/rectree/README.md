@@ -27,7 +27,7 @@ Rectree is designed to be:
 | ----------------- | ---------------------------------------------- |
 | [`Rectree`]       | tree structure and per-node layout logic       |
 | [`RectNodes`]     | flat mutable storage for per-node numbers      |
-| [`RectContext`]   | restricted build-time view of `RectNodes`      |
+| [`NodeContext`]   | restricted build-time view of `RectNodes`      |
 | [`RectNode`]      | per-node data (size, constraint, translation)  |
 | [`NodeState`]     | bitflags that short-circuit incremental passes |
 | [`Constraint`]    | min/max size bounds, flowing top-down          |
@@ -59,14 +59,14 @@ that actually changed are reprocessed.
 4. Given the same constraint, an unmodified node must always
    produce the same size.
 5. The build pass must not write child sizes, only child
-   translations. This is enforced by `RectContext`.
+   translations. This is enforced by `NodeContext`.
 
 ## Example
 
 ```rust
 use std::collections::HashMap;
 use rectree::{
-    Constraint, RectContext, RectNode, RectNodes,
+    Constraint, NodeContext, RectNode, RectNodes,
     Rectree, Size, layout,
 };
 
@@ -110,7 +110,7 @@ impl Rectree for Tree {
         parent
     }
 
-    fn build<N: RectContext<Id = Id>>(
+    fn build<N: NodeContext<Id = Id>>(
         &self,
         id: &Id,
         constraint: Constraint,

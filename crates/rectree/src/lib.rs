@@ -18,6 +18,7 @@ pub mod node;
 /// [`RectNodes`].
 pub trait Rectree {
     type Id;
+    type Nodes: NodeContext<Id = Self::Id>;
 
     /// Returns the direct children of `id` in layout order.
     fn children(
@@ -50,16 +51,16 @@ pub trait Rectree {
     /// - Write child local translations via
     ///   `nodes.set_translation(child_id, pos)`.
     ///
-    /// It must not mutate child sizes. `nodes` is a [`RectContext`]
+    /// It must not mutate child sizes. `nodes` is a [`NodeContext`]
     /// which intentionally limits access to reads and translation
     /// writes only.
     ///
     /// Called bottom-up by [`build`].
-    fn build<N: RectContext<Id = Self::Id>>(
+    fn build(
         &self,
         id: &Self::Id,
         constraint: Constraint,
-        nodes: &mut N,
+        nodes: &mut Self::Nodes,
     ) -> Size;
 }
 
@@ -72,7 +73,7 @@ pub trait Rectree {
 /// about tree structure or layout logic; those live in [`Rectree`].
 ///
 /// Any type that implements `RectNodes` automatically implements
-/// [`RectContext`] through a blanket impl.
+/// [`NodeContext`] through a blanket impl.
 ///
 /// # Splitting storage from tree logic
 ///
@@ -93,12 +94,12 @@ pub trait RectNodes {
 }
 
 /// Blanket impl: any [`RectNodes`] storage is automatically a
-/// [`RectContext`].
+/// [`NodeContext`].
 ///
-/// This means you never implement `RectContext` by hand. Just
+/// This means you never implement `NodeContext` by hand. Just
 /// implement `RectNodes` and the restricted build-time view
 /// comes for free.
-impl<N: RectNodes> RectContext for N {
+impl<N: RectNodes> NodeContext for N {
     type Id = N::Id;
 
     fn get_size(&self, id: &Self::Id) -> Size {
@@ -124,10 +125,10 @@ impl<N: RectNodes> RectContext for N {
 /// pass processes nodes bottom-up and a size written here would
 /// silently invalidate the ordering guarantee.
 ///
-/// `RectContext` is never implemented manually. Any type that
-/// implements [`RectNodes`] gets `RectContext` for free through
+/// `NodeContext` is never implemented manually. Any type that
+/// implements [`RectNodes`] gets `NodeContext` for free through
 /// a blanket impl in `lib.rs`.
-pub trait RectContext {
+pub trait NodeContext {
     type Id;
 
     /// Returns the resolved size of the node identified by `id`.
@@ -173,7 +174,7 @@ pub trait RectContext {
 /// Panics if `id` is not present in `nodes`.
 pub fn layout<
     Id: Copy,
-    T: Rectree<Id = Id>,
+    T: Rectree<Id = Id, Nodes = N>,
     N: RectNodes<Id = Id>,
 >(
     tree: &T,
@@ -287,7 +288,11 @@ pub fn constrain<Id, T: Rectree<Id = Id>, N: RectNodes<Id = Id>>(
 /// # Panics
 ///
 /// Panics if `id` is not present in `nodes`.
-pub fn build<Id, T: Rectree<Id = Id>, N: RectNodes<Id = Id>>(
+pub fn build<
+    Id,
+    T: Rectree<Id = Id, Nodes = N>,
+    N: RectNodes<Id = Id>,
+>(
     tree: &T,
     nodes: &mut N,
     id: &T::Id,
@@ -334,7 +339,7 @@ pub fn build<Id, T: Rectree<Id = Id>, N: RectNodes<Id = Id>>(
 /// Panics if `id` is not present in `nodes`.
 pub fn build_up<
     Id: Copy,
-    T: Rectree<Id = Id>,
+    T: Rectree<Id = Id, Nodes = N>,
     N: RectNodes<Id = Id>,
 >(
     tree: &T,
