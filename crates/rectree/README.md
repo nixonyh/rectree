@@ -23,15 +23,15 @@ Rectree is designed to be:
 
 ## Core Concepts
 
-| Type / Trait    | Role                                           |
-| --------------- | ---------------------------------------------- |
-| `Rectree`       | tree structure and per-node layout logic       |
-| `RectNodes`     | flat mutable storage for per-node numbers      |
-| `RectContext`   | restricted build-time view of `RectNodes`      |
-| `RectNode`      | per-node data (size, constraint, translation)  |
-| `NodeState`     | bitflags that short-circuit incremental passes |
-| `Constraint`    | min/max size bounds, flowing top-down          |
-| `Size`          | resolved dimensions, flowing bottom-up         |
+| Type / Trait      | Role                                           |
+| ----------------- | ---------------------------------------------- |
+| [`Rectree`]       | tree structure and per-node layout logic       |
+| [`RectNodes`]     | flat mutable storage for per-node numbers      |
+| [`RectContext`]   | restricted build-time view of `RectNodes`      |
+| [`RectNode`]      | per-node data (size, constraint, translation)  |
+| [`NodeState`]     | bitflags that short-circuit incremental passes |
+| [`Constraint`]    | min/max size bounds, flowing top-down          |
+| [`Size`]          | resolved dimensions, flowing bottom-up         |
 
 Rectree itself does not impose a specific layout style (e.g. flexbox,
 grid). Instead, it provides a strict data-flow model on top of which
