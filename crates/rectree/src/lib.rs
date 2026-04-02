@@ -443,31 +443,209 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_layout() {
+    fn test_layout_full_pass() {
         let mut tree = WidgetTree::default();
 
-        let id0 = 0;
-        let id1 = 1;
-        let id2 = 2;
+        tree.add_column(0, None, vec![1, 2]);
+        tree.add_fixed(1, Some(0), Size::new(10.0, 10.0));
+        tree.add_fixed(2, Some(0), Size::new(20.0, 5.0));
 
-        tree.add_column(id0, None, vec![id1]);
-        tree.add_column(id1, Some(id0), vec![id2]);
-        tree.add_fixed(id2, Some(id1), Size::splat(10.0));
+        tree.layout(&0);
 
-        tree.layout(&id0);
-
+        // 3 constrains + 3 builds + 3 translation propagations.
         assert_eq!(tree.tree.for_each_child_calls.get(), 9);
         assert_eq!(tree.tree.constrain_calls.get(), 3);
         assert_eq!(tree.tree.build_calls.get(), 3);
 
-        assert!(tree.nodes.0[&id0].state.is_ready());
+        assert_eq!(tree.nodes.0[&1].size, Size::new(10.0, 10.0));
+        assert_eq!(tree.nodes.0[&2].size, Size::new(20.0, 5.0));
+        // Width = max(10, 20) = 20; Height = 10 + 5 = 15.
+        assert_eq!(tree.nodes.0[&0].size, Size::new(20.0, 15.0));
 
-        // On second layout, nothing should be rebuilt.
-        tree.layout(&id0);
+        assert!(tree.nodes.0[&0].state.is_ready());
+        assert!(tree.nodes.0[&1].state.is_ready());
+        assert!(tree.nodes.0[&2].state.is_ready());
 
-        assert_eq!(tree.tree.for_each_child_calls.get(), 9);
-        assert_eq!(tree.tree.constrain_calls.get(), 3);
-        assert_eq!(tree.tree.build_calls.get(), 3);
+        let fec = tree.tree.for_each_child_calls.get();
+        let cc = tree.tree.constrain_calls.get();
+        let bc = tree.tree.build_calls.get();
+
+        // Further layouts should have nothing rebuilt.
+        tree.layout(&0);
+        tree.layout(&1);
+        tree.layout(&2);
+
+        assert_eq!(tree.tree.for_each_child_calls.get(), fec);
+        assert_eq!(tree.tree.constrain_calls.get(), cc);
+        assert_eq!(tree.tree.build_calls.get(), bc);
+    }
+
+    #[test]
+    fn test_constrain_stores_constraint() {
+        let mut wt = WidgetTree::default();
+        wt.add_fixed(0, None, Size::splat(10.0));
+
+        let c = Constraint::tight(Size::splat(100.0));
+        constrain(&wt.tree, &mut wt.nodes, &0, c);
+
+        assert_eq!(wt.nodes.0[&0].constraint, c);
+        assert!(wt.nodes.0[&0].state.is_constrained());
+    }
+
+    #[test]
+    fn test_constrain_propagates_to_children() {
+        let mut wt = WidgetTree::default();
+        wt.add_column(0, None, vec![1]);
+        wt.add_fixed(1, Some(0), Size::splat(10.0));
+
+        let c = Constraint::loose(Size::splat(100.0));
+        constrain(&wt.tree, &mut wt.nodes, &0, c);
+
+        // Column passes constraint through unchanged.
+        assert_eq!(wt.nodes.0[&1].constraint, c);
+        assert_eq!(wt.tree.constrain_calls.get(), 2);
+    }
+
+    #[test]
+    fn test_constrain_short_circuits_if_unchanged() {
+        let mut wt = WidgetTree::default();
+        wt.add_column(0, None, vec![1]);
+        wt.add_fixed(1, Some(0), Size::splat(10.0));
+
+        let c = Constraint::loose(Size::splat(100.0));
+        constrain(&wt.tree, &mut wt.nodes, &0, c);
+        let calls = wt.tree.constrain_calls.get();
+
+        // Same constraint: entire subtree is skipped.
+        constrain(&wt.tree, &mut wt.nodes, &0, c);
+        assert_eq!(wt.tree.constrain_calls.get(), calls);
+    }
+
+    #[test]
+    fn test_constrain_change_clears_built() {
+        let mut wt = WidgetTree::default();
+        wt.add_fixed(0, None, Size::splat(10.0));
+
+        constrain(
+            &wt.tree,
+            &mut wt.nodes,
+            &0,
+            Constraint::loose(Size::splat(100.0)),
+        );
+        build(&wt.tree, &mut wt.nodes, &0);
+        assert!(wt.nodes.0[&0].state.is_built());
+
+        // A different constraint must clear the BUILT flag.
+        constrain(
+            &wt.tree,
+            &mut wt.nodes,
+            &0,
+            Constraint::loose(Size::splat(200.0)),
+        );
+        assert!(!wt.nodes.0[&0].state.is_built());
+    }
+
+    #[test]
+    fn test_build_sets_size() {
+        let mut wt = WidgetTree::default();
+        wt.add_fixed(0, None, Size::new(30.0, 20.0));
+        build(&wt.tree, &mut wt.nodes, &0);
+
+        assert_eq!(wt.nodes.0[&0].size, Size::new(30.0, 20.0));
+        assert!(wt.nodes.0[&0].state.is_built());
+    }
+
+    #[test]
+    fn test_build_column_sums_children() {
+        let mut wt = WidgetTree::default();
+        wt.add_column(0, None, vec![1, 2]);
+        wt.add_fixed(1, Some(0), Size::new(10.0, 10.0));
+        wt.add_fixed(2, Some(0), Size::new(20.0, 5.0));
+        build(&wt.tree, &mut wt.nodes, &0);
+
+        // Width = max(10, 20) = 20; Height = 10 + 5 = 15.
+        assert_eq!(wt.nodes.0[&0].size, Size::new(20.0, 15.0));
+    }
+
+    #[test]
+    fn test_build_short_circuits_if_built() {
+        let mut wt = WidgetTree::default();
+        wt.add_fixed(0, None, Size::splat(10.0));
+        build(&wt.tree, &mut wt.nodes, &0);
+        let calls = wt.tree.build_calls.get();
+
+        // Already built; no further calls.
+        build(&wt.tree, &mut wt.nodes, &0);
+        assert_eq!(wt.tree.build_calls.get(), calls);
+    }
+
+    #[test]
+    fn test_propagate_translation_sets_world_pos() {
+        let mut wt = WidgetTree::default();
+        wt.add_column(0, None, vec![1]);
+        wt.add_fixed(1, Some(0), Size::splat(10.0));
+
+        wt.nodes.0.get_mut(&1).unwrap().translation =
+            Vec2::new(10.0, 5.0);
+        propagate_translation(
+            &wt.tree,
+            &mut wt.nodes,
+            &0,
+            Vec2::ZERO,
+        );
+
+        assert_eq!(wt.nodes.0[&0].world_translation, Vec2::ZERO);
+        assert_eq!(
+            wt.nodes.0[&1].world_translation,
+            Vec2::new(10.0, 5.0),
+        );
+    }
+
+    #[test]
+    fn test_propagate_translation_accumulates() {
+        let mut wt = WidgetTree::default();
+        wt.add_column(0, None, vec![1, 2]);
+        wt.add_fixed(1, Some(0), Size::new(10.0, 10.0));
+        wt.add_fixed(2, Some(0), Size::new(20.0, 5.0));
+
+        // build positions children: node 1 at y=0, node 2 at y=10.
+        build(&wt.tree, &mut wt.nodes, &0);
+        propagate_translation(
+            &wt.tree,
+            &mut wt.nodes,
+            &0,
+            Vec2::ZERO,
+        );
+
+        assert_eq!(wt.nodes.0[&1].world_translation, Vec2::ZERO);
+        assert_eq!(
+            wt.nodes.0[&2].world_translation,
+            Vec2::new(0.0, 10.0),
+        );
+    }
+
+    #[test]
+    fn test_propagate_translation_short_circuits_if_positioned() {
+        let mut wt = WidgetTree::default();
+        wt.add_column(0, None, vec![1]);
+        wt.add_fixed(1, Some(0), Size::splat(10.0));
+
+        propagate_translation(
+            &wt.tree,
+            &mut wt.nodes,
+            &0,
+            Vec2::ZERO,
+        );
+        let calls = wt.tree.for_each_child_calls.get();
+
+        // All nodes POSITIONED; entire subtree is skipped.
+        propagate_translation(
+            &wt.tree,
+            &mut wt.nodes,
+            &0,
+            Vec2::ZERO,
+        );
+        assert_eq!(wt.tree.for_each_child_calls.get(), calls);
     }
 
     type Id = usize;
@@ -502,14 +680,6 @@ mod tests {
         Fixed(Size),
     }
 
-    /// General-purpose test tree.
-    ///
-    /// - [`Rectree::constrain`] always passes the parent constraint
-    ///   through unchanged.
-    /// - [`Rectree::build`] returns a fixed size when one is set for
-    ///   the node; for containers it sums children widths and takes
-    ///   the maximum height; for leaves it fills `constraint.max`.
-    /// - `build_calls` counts every invocation for incremental tests.
     #[derive(Default)]
     struct Tree {
         widgets: BTreeMap<Id, Widget>,
@@ -575,6 +745,10 @@ mod tests {
                     let mut size = Size::ZERO;
                     for child in children {
                         let child_size = nodes.get_size(child);
+                        nodes.set_translation(
+                            child,
+                            Vec2::new(0.0, size.height),
+                        );
                         size.width = size.width.max(child_size.width);
                         size.height += child_size.height;
                     }
