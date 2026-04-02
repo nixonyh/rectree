@@ -176,14 +176,20 @@ mod tests {
     #[test]
     fn test_constrain_clamps_above_max() {
         let c = Constraint::loose(Size::splat(100.0));
-        assert_eq!(c.constrain(Size::splat(200.0)), Size::splat(100.0));
+        assert_eq!(
+            c.constrain(Size::splat(200.0)),
+            Size::splat(100.0)
+        );
     }
 
     #[test]
     fn test_constrain_tight_forces_exact_size() {
         let c = Constraint::tight(Size::new(30.0, 20.0));
         assert_eq!(c.constrain(Size::ZERO), Size::new(30.0, 20.0));
-        assert_eq!(c.constrain(Size::INFINITY), Size::new(30.0, 20.0));
+        assert_eq!(
+            c.constrain(Size::INFINITY),
+            Size::new(30.0, 20.0)
+        );
     }
 
     #[test]
