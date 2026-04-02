@@ -158,3 +158,65 @@ impl NodeState {
         self.insert(Self::BUILT);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_has_no_flags() {
+        let s = NodeState::default();
+        assert!(!s.is_constrained());
+        assert!(!s.is_built());
+        assert!(!s.is_positioned());
+        assert!(!s.is_ready());
+    }
+
+    #[test]
+    fn test_is_ready_only_when_all_flags_set() {
+        let mut s = NodeState::default();
+        s.has_reconstrained();
+        assert!(!s.is_ready());
+        s.has_rebuilt();
+        assert!(!s.is_ready());
+        s.has_repositioned();
+        assert!(s.is_ready());
+    }
+
+    #[test]
+    fn test_reset_clears_all_flags() {
+        let mut s = NodeState::all();
+        s.reset();
+        assert!(!s.is_constrained());
+        assert!(!s.is_built());
+        assert!(!s.is_positioned());
+        assert!(!s.is_ready());
+    }
+
+    #[test]
+    fn test_needs_rebuild_clears_built() {
+        let mut s = NodeState::default();
+        s.has_rebuilt();
+        assert!(s.is_built());
+        s.needs_rebuild();
+        assert!(!s.is_built());
+    }
+
+    #[test]
+    fn test_needs_reposition_clears_positioned() {
+        let mut s = NodeState::default();
+        s.has_repositioned();
+        assert!(s.is_positioned());
+        s.needs_reposition();
+        assert!(!s.is_positioned());
+    }
+
+    #[test]
+    fn test_needs_reconstrain_clears_constrained() {
+        let mut s = NodeState::default();
+        s.has_reconstrained();
+        assert!(s.is_constrained());
+        s.needs_reconstrain();
+        assert!(!s.is_constrained());
+    }
+}

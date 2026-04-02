@@ -153,3 +153,43 @@ impl Default for Constraint {
         Self::unbounded()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_constrain_passes_through_within_bounds() {
+        let c = Constraint::loose(Size::splat(100.0));
+        assert_eq!(c.constrain(Size::splat(50.0)), Size::splat(50.0));
+    }
+
+    #[test]
+    fn test_constrain_clamps_below_min() {
+        let c = Constraint {
+            min: Size::splat(10.0),
+            max: Size::splat(100.0),
+        };
+        assert_eq!(c.constrain(Size::splat(5.0)), Size::splat(10.0));
+    }
+
+    #[test]
+    fn test_constrain_clamps_above_max() {
+        let c = Constraint::loose(Size::splat(100.0));
+        assert_eq!(c.constrain(Size::splat(200.0)), Size::splat(100.0));
+    }
+
+    #[test]
+    fn test_constrain_tight_forces_exact_size() {
+        let c = Constraint::tight(Size::new(30.0, 20.0));
+        assert_eq!(c.constrain(Size::ZERO), Size::new(30.0, 20.0));
+        assert_eq!(c.constrain(Size::INFINITY), Size::new(30.0, 20.0));
+    }
+
+    #[test]
+    fn test_constrain_unbounded_passes_through() {
+        let c = Constraint::unbounded();
+        let s = Size::new(999.0, 999.0);
+        assert_eq!(c.constrain(s), s);
+    }
+}
