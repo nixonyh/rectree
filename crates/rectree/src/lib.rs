@@ -194,7 +194,7 @@ pub fn layout<
     nodes: &mut N,
     id: &Id,
 ) {
-    let node = nodes.get_node(id).expect("Id is invalid!");
+    let node = nodes.get_node(id).expect("layout: Id is invalid!");
 
     let old_size = node.size;
     let parent = node.parent_id;
@@ -219,11 +219,15 @@ pub fn layout<
         bubbled_id = build_up(tree, nodes, parent_id);
     }
 
-    // 3. Propagate translation.
+    // 3. Propagate translation, seeding from `bubbled_id`'s parent
+    // world translation. Seeding from `bubbled_id`'s own translation
+    // would offset a non-root node by its own translation each pass;
+    // the root has no parent and seeds from zero.
     let parent_world = nodes
         .get_node(&bubbled_id)
-        .expect("Id is invalid!")
-        .world_translation;
+        .and_then(|node| node.parent_id)
+        .and_then(|parent| nodes.get_node(&parent))
+        .map_or(Vec2::ZERO, |node| node.world_translation);
     propagate_translation(tree, nodes, &bubbled_id, parent_world);
 }
 
@@ -259,7 +263,7 @@ pub fn constrain<
     id: &T::Id,
     parent: Constraint,
 ) {
-    let node = nodes.get_node(id).expect("Id is invalid!");
+    let node = nodes.get_node(id).expect("constrain: Id is invalid!");
 
     let old_constraint = node.constraint;
     let constraint_unchanged = parent == old_constraint;
@@ -314,7 +318,7 @@ pub fn build<
     nodes: &mut N,
     id: &T::Id,
 ) {
-    let node = nodes.get_node(id).expect("Id is invalid!");
+    let node = nodes.get_node(id).expect("build: Id is invalid!");
 
     // Already up-to-date; skip this entire subtree.
     if node.state.is_built() {
@@ -363,7 +367,7 @@ pub fn build_up<
     nodes: &mut N,
     id: &T::Id,
 ) -> Id {
-    let node = nodes.get_node(id).expect("Id is invalid!");
+    let node = nodes.get_node(id).expect("build_up: Id is invalid!");
 
     let constraint = node.constraint;
     let old_size = node.size;
@@ -414,7 +418,9 @@ pub fn propagate_translation<
     id: &T::Id,
     parent_world: Vec2,
 ) {
-    let node = nodes.get_node(id).expect("Id is invalid!");
+    let node = nodes
+        .get_node(id)
+        .expect("propagate_translation: Id is invalid!");
 
     // Already up-to-date; skip this entire subtree.
     if node.state.is_positioned() {
