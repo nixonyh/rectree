@@ -228,7 +228,13 @@ pub fn layout<
         .and_then(|node| node.parent_id)
         .and_then(|parent| nodes.get_node(&parent))
         .map_or(Vec2::ZERO, |node| node.world_translation);
-    propagate_translation(tree, nodes, &bubbled_id, parent_world);
+    propagate_translation(
+        tree,
+        nodes,
+        &bubbled_id,
+        parent_world,
+        false,
+    );
 }
 
 /// Propagates a constraint top-down through the subtree rooted
@@ -417,25 +423,36 @@ pub fn propagate_translation<
     nodes: &mut N,
     id: &T::Id,
     parent_world: Vec2,
+    parent_translation_changed: bool,
 ) {
     let node = nodes
         .get_node(id)
         .expect("propagate_translation: Id is invalid!");
 
     // Already up-to-date; skip this entire subtree.
-    if node.state.is_positioned() {
+    if !parent_translation_changed && node.state.is_positioned() {
         return;
     }
 
     let world = parent_world + node.translation;
 
+    let mut translation_changed = false;
     if let Some(n) = nodes.get_node_mut(id) {
-        n.world_translation = world;
+        translation_changed = n.world_translation != world;
+        if translation_changed {
+            n.world_translation = world;
+        }
         n.state.has_repositioned();
     }
 
     tree.for_each_child(id, nodes, |child, nodes| {
-        propagate_translation(tree, nodes, child, world);
+        propagate_translation(
+            tree,
+            nodes,
+            child,
+            world,
+            translation_changed,
+        );
     });
 }
 
@@ -598,6 +615,7 @@ mod tests {
             &mut wt.nodes,
             &0,
             Vec2::ZERO,
+            false,
         );
 
         assert_eq!(wt.nodes.0[&0].world_translation, Vec2::ZERO);
@@ -621,6 +639,7 @@ mod tests {
             &mut wt.nodes,
             &0,
             Vec2::ZERO,
+            false,
         );
 
         assert_eq!(wt.nodes.0[&1].world_translation, Vec2::ZERO);
@@ -641,6 +660,7 @@ mod tests {
             &mut wt.nodes,
             &0,
             Vec2::ZERO,
+            false,
         );
         let calls = wt.tree.for_each_child_calls.get();
 
@@ -650,6 +670,7 @@ mod tests {
             &mut wt.nodes,
             &0,
             Vec2::ZERO,
+            false,
         );
         assert_eq!(wt.tree.for_each_child_calls.get(), calls);
     }
