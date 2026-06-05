@@ -84,17 +84,17 @@ bitflags! {
     /// | Translation propagated         | `POSITIONED` set                   |
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
     pub struct NodeState: u8 {
-        /// Set by [`crate::propagate_translation`] when
-        /// `world_translation` is current.
-        const POSITIONED  = 1;
-
         /// Set by [`crate::constrain`] when the stored constraint
         /// matches the value last propagated from the parent.
-        const CONSTRAINED = 1 << 1;
+        const CONSTRAINED = 1;
 
         /// Set by [`crate::build`] or [`crate::build_up`] when
         /// `size` and child translations are current.
-        const BUILT       = 1 << 2;
+        const BUILT       = 1 << 1;
+
+        /// Set by [`crate::propagate_translation`] when
+        /// `world_translation` is current.
+        const POSITIONED  = 1 << 2;
     }
 }
 
@@ -113,11 +113,6 @@ impl NodeState {
         *self == Self::all()
     }
 
-    /// Returns `true` if the `POSITIONED` flag is set.
-    pub fn is_positioned(&self) -> bool {
-        self.intersects(Self::POSITIONED)
-    }
-
     /// Returns `true` if the `CONSTRAINED` flag is set.
     pub fn is_constrained(&self) -> bool {
         self.intersects(Self::CONSTRAINED)
@@ -128,9 +123,9 @@ impl NodeState {
         self.intersects(Self::BUILT)
     }
 
-    /// Clears `POSITIONED`, marking translation as stale.
-    pub fn needs_reposition(&mut self) {
-        self.remove(Self::POSITIONED);
+    /// Returns `true` if the `POSITIONED` flag is set.
+    pub fn is_positioned(&self) -> bool {
+        self.intersects(Self::POSITIONED)
     }
 
     /// Clears `CONSTRAINED`, marking constraint as stale.
@@ -143,9 +138,9 @@ impl NodeState {
         self.remove(Self::BUILT);
     }
 
-    /// Sets `POSITIONED`, marking translation as current.
-    pub fn has_repositioned(&mut self) {
-        self.insert(Self::POSITIONED);
+    /// Clears `POSITIONED`, marking translation as stale.
+    pub fn needs_reposition(&mut self) {
+        self.remove(Self::POSITIONED);
     }
 
     /// Sets `CONSTRAINED`, marking constraint as current.
@@ -156,6 +151,11 @@ impl NodeState {
     /// Sets `BUILT`, marking size and translations as current.
     pub fn has_rebuilt(&mut self) {
         self.insert(Self::BUILT);
+    }
+
+    /// Sets `POSITIONED`, marking translation as current.
+    pub fn has_repositioned(&mut self) {
+        self.insert(Self::POSITIONED);
     }
 }
 
@@ -186,11 +186,24 @@ mod tests {
     #[test]
     fn test_reset_clears_all_flags() {
         let mut s = NodeState::all();
+        s.has_reconstrained();
+        s.has_rebuilt();
+        s.has_repositioned();
+        assert!(s.is_ready());
         s.reset();
         assert!(!s.is_constrained());
         assert!(!s.is_built());
         assert!(!s.is_positioned());
         assert!(!s.is_ready());
+    }
+
+    #[test]
+    fn test_needs_reconstrain_clears_constrained() {
+        let mut s = NodeState::default();
+        s.has_reconstrained();
+        assert!(s.is_constrained());
+        s.needs_reconstrain();
+        assert!(!s.is_constrained());
     }
 
     #[test]
@@ -209,14 +222,5 @@ mod tests {
         assert!(s.is_positioned());
         s.needs_reposition();
         assert!(!s.is_positioned());
-    }
-
-    #[test]
-    fn test_needs_reconstrain_clears_constrained() {
-        let mut s = NodeState::default();
-        s.has_reconstrained();
-        assert!(s.is_constrained());
-        s.needs_reconstrain();
-        assert!(!s.is_constrained());
     }
 }
