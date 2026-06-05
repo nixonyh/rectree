@@ -122,6 +122,7 @@ impl<N: RectNodes> NodeContext for N {
     fn set_translation(&mut self, id: &Self::Id, translation: Vec2) {
         if let Some(n) = self.get_node_mut(id) {
             n.translation = translation;
+            n.state.needs_reposition();
         }
     }
 }
@@ -220,9 +221,7 @@ pub fn layout<
     }
 
     // 3. Propagate translation, seeding from `bubbled_id`'s parent
-    // world translation. Seeding from `bubbled_id`'s own translation
-    // would offset a non-root node by its own translation each pass;
-    // the root has no parent and seeds from zero.
+    // world translation.
     let parent_world = nodes
         .get_node(&bubbled_id)
         .and_then(|node| node.parent_id)
