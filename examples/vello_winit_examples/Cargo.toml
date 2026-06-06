@@ -10,6 +10,6 @@ publish = false
 rectree.workspace = true
 hashbrown.workspace = true
 kurbo.workspace = true
-vello = "0.6"
+vello = "0.7"
 winit = "0.30.12"
 pollster = "0.4.0"
