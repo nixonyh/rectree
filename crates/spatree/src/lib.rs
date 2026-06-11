@@ -12,6 +12,8 @@ use kurbo::{Point, Rect};
 
 use crate::morton::{MortonCode, find_split, morton_2d_f64};
 
+pub use kurbo;
+
 pub mod morton;
 
 /// **Spatree** implements a Linear Bounding Volume Hierarchy (LBVH).
