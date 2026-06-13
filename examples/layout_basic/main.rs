@@ -46,7 +46,8 @@ use rectree::{
 use vello::Scene;
 use vello::peniko::Color;
 use vello::peniko::color::palette::css;
-use vello_winit_examples::{VelloDemo, VelloWinitApp};
+mod vello_winit;
+use vello_winit::{VelloDemo, VelloWinitApp};
 use winit::event_loop::EventLoop;
 
 fn main() {
