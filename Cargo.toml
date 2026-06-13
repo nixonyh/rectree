@@ -11,3 +11,10 @@ readme = "README.md"
 
 [dependencies]
 bitflags = { version = "2", default-features = false }
+
+[dev-dependencies]
+hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher", "inline-more"] }
+kurbo = { version = "0.13.1", default-features = false, features = ["std"] }
+vello = "0.7"
+winit = "0.30.12"
+pollster = "0.4.0"
