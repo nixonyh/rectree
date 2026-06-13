@@ -1,16 +1,13 @@
-[workspace]
-resolver = "2"
-members = ["crates/*", "examples/*", ]
-
-[workspace.package]
+[package]
+name = "rectree"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/voxell-tech/rectree"
+description = "Representing user interfaces using a rectangle tree."
+keywords = ["rectangle", "layout", "user-interface", "hierarchy", "box"]
+categories = ["gui", "data-structures", "no-std"]
+readme = "README.md"
 
-[workspace.dependencies]
-rectree = { version = "0.1.0", path = "crates/rectree" }
-sparse_map = "0.1.2"
-hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher", "inline-more"] }
-kurbo = { version = "0.13.1", default-features = false }
+[dependencies]
 bitflags = { version = "2", default-features = false }

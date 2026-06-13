@@ -1,15 +1,15 @@
 [package]
 name = "vello_winit_examples"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/voxell-tech/rectree"
 publish = false
 
 [dependencies]
-rectree.workspace = true
-hashbrown.workspace = true
-kurbo.workspace = true
+rectree = { path = "../.." }
+hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher", "inline-more"] }
+kurbo = { version = "0.13.1", default-features = false }
 vello = "0.7"
 winit = "0.30.12"
 pollster = "0.4.0"
